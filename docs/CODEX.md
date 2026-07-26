@@ -14,7 +14,7 @@ This command merges Agents Observe handlers into `~/.codex/hooks.json`. It prese
 
 Codex hooks are enabled by default. Start Codex, open `/hooks`, and trust the newly installed command definitions. Codex stores trust against the exact hook definition, so moving the Agents Observe checkout or changing the generated command requires running the installer again and reviewing the changed hooks.
 
-The installed commands call the absolute path to `hooks/scripts/hook.sh`, which makes them independent of the active project root. This is compatible with the planned spool/arm/watcher pipeline because that shared hook entrypoint remains the handoff boundary.
+The installed commands call the absolute path to `hooks/scripts/hook.sh`, which makes them independent of the active project root. This is compatible with the spool-first collector delivery pipeline because that shared hook entrypoint remains the handoff boundary.
 
 ## Check status
 

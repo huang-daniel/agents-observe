@@ -13,13 +13,19 @@ external systems.
 
 Read at CLI invocation by `hooks/scripts/lib/config.mjs`. Set these in
 your shell profile or the Claude Code plugin config to customize
-per-user behavior.
+per-user behavior. `hooks/scripts/supervision/observe-spool.sh` mirrors
+`AGENT_CLASS`, `PROJECT_SLUG`, `NOTIFICATION_ON_EVENTS`, and
+`MAX_IMAGE_DATA_CHARS` in bash so `hook.sh` can encode them onto each raw
+spool entry without invoking Node — keep the two readers' defaults in sync,
+same as the [collector supervision](./collector-supervision.md#two-implementations-one-contract)
+shell/TypeScript pairs.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `AGENTS_OBSERVE_AGENT_CLASS` | `claude-code` | Which agent class the CLI dispatches through: `claude-code`, `codex`, or anything else (falls back to the `unknown` lib). |
 | `AGENTS_OBSERVE_PROJECT_SLUG` | *(unset)* | Override the project slug the CLI reports on each event. |
 | `AGENTS_OBSERVE_NOTIFICATION_ON_EVENTS` | *(unset — defaults to `Notification`)* | Comma-separated hook events that trigger the notification bell. Empty string (`""`) disables bells entirely. Claude Code's `Notification` hook fires by default; Codex has no equivalent, so Codex users must opt in (e.g. set to `Stop` to fire on turn end). See [spec-configurable-notification-events.md](./plans/spec-configurable-notification-events.md). |
+| `AGENTS_OBSERVE_MAX_IMAGE_DATA_CHARS` | `50000` | Base64 image `tool_response` data longer than this many characters is replaced with `[REDACTED]` before storage. |
 | `AGENTS_OBSERVE_ALLOW_LOCAL_CALLBACKS` | `all` | Comma-separated allowlist of server-initiated callbacks the CLI will execute. `all` permits every known handler. |
 | `AGENTS_OBSERVE_API_BASE_URL` | *(derived from `AGENTS_OBSERVE_SERVER_PORT`)* | Full URL of the server API (e.g. `http://remote:4981/api`). Overrides the auto-started local Docker server. |
 | `AGENTS_OBSERVE_LOG_LEVEL` | `warn` | CLI log level: `error`, `warn`, `info`, `debug`, `trace`. |
@@ -91,8 +97,9 @@ Controls where and how the server runs.
 Read by the shell-side supervision primitives in
 `hooks/scripts/supervision/lib/observe-env.sh` and by the server in
 `app/server/src/config.ts` (`config.supervision`), not by `config.mjs`. Both
-sides read and write the same files, so the names and defaults are shared. The
-hook and CLI are not wired to them. See
+sides read and write the same files, so the names and defaults are shared.
+`hooks/scripts/hook.sh` reads the health predicate to decide whether to arm the
+collector; the CLI itself still does not read them. See
 [collector-supervision.md](./collector-supervision.md#configuration) for the
 full variable list, defaults, and the contract they support.
 

@@ -12,9 +12,18 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import type { EventEnvelope } from '../types'
+import { validateEnvelope } from '../parser'
 import type { EventStore } from '../storage/types'
 import { DuplicateSpoolEventIdError } from '../storage/types'
 import { runtimePaths } from './paths'
+
+interface RawHookEntry {
+  agentClass?: string
+  projectSlug?: string
+  notificationOnEvents?: string | null
+  maxImageDataChars?: string
+  payload: Record<string, unknown>
+}
 
 export interface SpoolStats {
   lastCommittedEventId: string | null
@@ -32,7 +41,8 @@ export interface SpoolConsumerOptions {
 
 interface SpoolEntry {
   eventId?: string
-  envelope: EventEnvelope
+  envelope?: EventEnvelope
+  rawHook?: RawHookEntry
   timestamp: number
   attempts?: number
 }
@@ -90,7 +100,9 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
   }
 
   async function commit(eventId: string, entry: SpoolEntry): Promise<void> {
-    const { envelope } = entry
+    const normalized = validateEnvelope(await entryEnvelope(entry))
+    const { envelope } = normalized
+    const timestamp = normalized.timestamp
     const sessionHints = envelope._meta?.session
     const agentHints = envelope._meta?.agent
     await options.store.upsertSession(
@@ -98,7 +110,7 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
       null,
       sessionHints?.slug ?? null,
       sessionHints?.metadata ?? null,
-      entry.timestamp,
+      timestamp,
       sessionHints?.transcriptPath ?? null,
       sessionHints?.startCwd ?? null,
     )
@@ -116,7 +128,7 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
         agentId: envelope.agentId,
         sessionId: envelope.sessionId,
         hookName: envelope.hookName,
-        timestamp: entry.timestamp,
+        timestamp,
         payload: envelope.payload,
         cwd: envelope.cwd ?? null,
         _meta: (envelope._meta as Record<string, unknown> | undefined) ?? null,
@@ -126,6 +138,54 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
       if (error instanceof DuplicateSpoolEventIdError) return
       throw error
     }
+  }
+
+  async function entryEnvelope(entry: SpoolEntry): Promise<EventEnvelope> {
+    if (entry.envelope) return entry.envelope
+    if (!entry.rawHook?.payload) throw new Error('spool entry has no envelope or raw hook payload')
+
+    // This is intentionally the same registry used by observe_cli's old
+    // per-hook path. The collector loads it once, rather than spawning Node
+    // for every lifecycle event.
+    const agents = await import('../../../../hooks/scripts/lib/agents/index.mjs')
+    const configured = entry.rawHook.agentClass
+    const agentClass = agents.getAgentClass({ agentClass: configured }, null, entry.rawHook.payload)
+    const notificationOnEvents =
+      entry.rawHook.notificationOnEvents == null
+        ? undefined
+        : entry.rawHook.notificationOnEvents
+            .split(',')
+            .map((name) => name.trim())
+            .filter(Boolean)
+    const maxImageDataChars = Number.parseInt(entry.rawHook.maxImageDataChars ?? '50000', 10)
+    const config = {
+      agentClass,
+      projectSlug: entry.rawHook.projectSlug || null,
+      notificationOnEvents,
+      maxImageDataChars: Number.isNaN(maxImageDataChars) ? 50000 : maxImageDataChars,
+    }
+    const log = { debug() {}, trace() {}, info() {}, warn() {}, error() {} }
+    const lib = agents.getAgentLib(agentClass)
+
+    // Keep the old hook's image redaction behavior before building its envelope.
+    const payload = structuredClone(entry.rawHook.payload)
+    const response = payload.tool_response
+    if (config.maxImageDataChars > 0 && Array.isArray(response)) {
+      for (const item of response) {
+        if (!item || typeof item !== 'object' || item.type !== 'image') continue
+        const source = item.source
+        if (
+          source &&
+          typeof source === 'object' &&
+          source.type === 'base64' &&
+          typeof source.data === 'string' &&
+          source.data.length > config.maxImageDataChars
+        ) {
+          source.data = '[REDACTED]'
+        }
+      }
+    }
+    return lib.buildHookEvent(config, log, payload).envelope as EventEnvelope
   }
 
   async function consumeOnce(): Promise<void> {

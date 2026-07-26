@@ -70,6 +70,52 @@ describe('spool consumer', () => {
     expect(consumer.stats().lastCommittedEventId).toBe('same-event')
   })
 
+  it('normalizes raw hook entries with the same fields as the old CLI path', async () => {
+    const root = makeDataRoot('spool-hook-parity')
+    roots.push(root)
+    const store = new SqliteAdapter(':memory:')
+    const pending = join(runtimePaths(root).spoolDir, 'pending')
+    mkdirSync(pending, { recursive: true })
+    writeFileSync(
+      join(pending, 'raw-hook.json'),
+      JSON.stringify({
+        timestamp: 1_700_000_000_000,
+        rawHook: {
+          agentClass: 'codex',
+          projectSlug: 'parity-project',
+          notificationOnEvents: 'Notification',
+          maxImageDataChars: '4',
+          payload: {
+            hook_event_name: 'SessionStart',
+            session_id: 'raw-session',
+            agent_id: 'raw-agent',
+            cwd: '/repo',
+            timestamp: 1_700_000_000_123,
+            model: 'gpt-5',
+            tool_response: [{ type: 'image', source: { type: 'base64', data: 'abcdef' } }],
+          },
+        },
+      }),
+    )
+
+    const consumer = createSpoolConsumer({ dataRoot: root, store })
+    await consumer.consumeOnce()
+    const [event] = await store.getEventsForSession('raw-session')
+    expect(event).toMatchObject({
+      agent_id: 'raw-agent',
+      hook_name: 'SessionStart',
+      timestamp: 1_700_000_000_123,
+      cwd: '/repo',
+    })
+    expect(JSON.parse(event.payload)).toMatchObject({
+      tool_response: [{ source: { data: '[REDACTED]' } }],
+    })
+    expect(JSON.parse(event._meta!)).toMatchObject({
+      project: { slug: 'parity-project' },
+      codex: { model: 'gpt-5' },
+    })
+  })
+
   it('moves repeatedly failing entries to failed and keeps consuming', async () => {
     const root = makeDataRoot('spool-failed')
     roots.push(root)

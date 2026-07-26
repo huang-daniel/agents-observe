@@ -5,12 +5,12 @@ Detailed reference for developing agents-observe locally. For quick start, see [
 ## Architecture
 
 ```
-Claude Code Hooks  ->  hook.sh  ->  observe_cli.mjs  ->  API Server (SQLite)  ->  React Dashboard
-    (stdin JSON)       (bash)       (HTTP POST)          (parse + store)         (WebSocket live)
+Claude Code Hooks  ->  hook.sh  ->  durable spool  ->  API Server (SQLite)  ->  React Dashboard
+    (stdin JSON)       (bash)      (collector consumer)  (parse + store)        (WebSocket live)
 ```
 
-- **Hooks** (`hooks/scripts/hook.sh`) read raw JSON from stdin and forward to `observe_cli.mjs`
-- **CLI** (`hooks/scripts/observe_cli.mjs`) POSTs events to the server API. Also handles `hook-sync`, `hook-autostart`, `health`, `start`, `stop`, `restart`, `logs`, `db-reset`.
+- **Hooks** (`hooks/scripts/hook.sh`) read raw JSON from stdin and write it straight to the durable spool, arming the collector via the lock/heartbeat supervisor when it isn't healthy (see [collector-supervision.md](./collector-supervision.md)). Falls back to `observe_cli.mjs` (HTTP POST) only if the spool write itself fails.
+- **CLI** (`hooks/scripts/observe_cli.mjs`) still handles `hook-sync`, `hook-autostart`, `health`, `start`, `stop`, `restart`, `logs`, `db-reset`, and the `hook` fallback above.
 - **MCP** (`hooks/scripts/mcp_server.mjs`) starts the Docker container and maintains a heartbeat. Claude spawns this when loading the plugin.
 - **Server** (`app/server/`) Hono + SQLite + WebSocket
 - **Client** (`app/client/`) React 19 + shadcn dashboard

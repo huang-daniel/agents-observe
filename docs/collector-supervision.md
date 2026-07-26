@@ -12,9 +12,18 @@ This document is the contract. The shell primitives that implement it live in
 
 > **Status:** the collector claims the lock, publishes the heartbeat, and reports
 > the health predicate on `/api/health`. The shell supervisor arm can attach,
-> start, restart, and stop that collector. The durable spool and its consumer
-> exist and are exercised by tests, but nothing writes to it yet: the hook, the
-> CLI, and event delivery still go straight over HTTP, unchanged.
+> start, restart, and stop that collector. `hooks/scripts/hook.sh` now writes
+> every raw event to the durable spool first, then arms the collector via the
+> supervisor when the health predicate is false. The spool consumer normalizes
+> raw hook entries with the same agent-specific builders
+> (`hooks/scripts/lib/agents/`) the old per-hook `observe_cli.mjs` path used,
+> then commits to SQLite directly — no HTTP round trip. That CLI `hook` command
+> still exists as a last-resort fallback for the rare spool-write failure.
+> Known limitation: the `getSessionInfo` request/response that backfills a
+> session's slug (see [README.md](../README.md#architecture)) only fires on
+> that legacy fallback path — the spool consumer's `commit()` has no HTTP
+> round trip to carry a request back to the hook, so a session that spools
+> successfully keeps whatever slug (if any) it already had.
 
 ## Two implementations, one contract
 
