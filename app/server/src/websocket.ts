@@ -11,8 +11,10 @@ const LOG_LEVEL = config.logLevel
 const clientSessions = new Map<WebSocket, string>()
 const allClients = new Set<WebSocket>()
 
+let wss: WebSocketServer | null = null
+
 export function attachWebSocket(server: Server) {
-  const wss = new WebSocketServer({
+  const socketServer = new WebSocketServer({
     server,
     path: '/api/events/stream',
     // Reject cross-origin browser connections. The event stream is
@@ -29,7 +31,9 @@ export function attachWebSocket(server: Server) {
     },
   })
 
-  wss.on('connection', (ws) => {
+  wss = socketServer
+
+  socketServer.on('connection', (ws) => {
     allClients.add(ws)
     cancelPendingShutdown()
     console.log(`[WS] Client connected (${allClients.size} total)`)
@@ -147,4 +151,19 @@ export function broadcastToAll(message: object): void {
 
 export function getClientCount(): number {
   return allClients.size
+}
+
+/** Stop accepting connections and drop the ones we have. Used on shutdown. */
+export function closeWebSocket(): void {
+  for (const client of allClients) {
+    try {
+      client.terminate()
+    } catch {
+      // already gone
+    }
+  }
+  allClients.clear()
+  clientSessions.clear()
+  wss?.close()
+  wss = null
 }

@@ -1411,6 +1411,11 @@ export class SqliteAdapter implements EventStore {
     return result
   }
 
+  /** Close the DB handle. Idempotent — better-sqlite3 tolerates a repeat. */
+  close(): void {
+    this.db.close()
+  }
+
   async healthCheck(): Promise<{ ok: boolean; error?: string }> {
     try {
       const row = this.db.prepare('SELECT 1 AS ok').get() as { ok: number } | undefined

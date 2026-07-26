@@ -100,6 +100,27 @@ export const config = {
   sweepIntervalMs: 10_000,
   startupGraceMs: 60_000,
 
+  // Collector supervision. These names and defaults are shared with the shell
+  // primitives in hooks/scripts/supervision/lib/observe-env.sh — the two sides
+  // read and write the same files, so they must not drift. See
+  // docs/collector-supervision.md.
+  supervision: {
+    // Data root precedence, matching observe_env_init: AGENTS_OBSERVE_DATA_ROOT,
+    // then the existing data-dir override, then ~/.agents-observe. Note this is
+    // the root itself, not `dataDir` (`<root>/data`) where the DB lives.
+    dataRoot: process.env.AGENTS_OBSERVE_DATA_ROOT || '',
+    localDataRoot: process.env.AGENTS_OBSERVE_LOCAL_DATA_ROOT || '',
+    homeDir: process.env.HOME || '',
+    // Identifies one collector *run*. Restarting produces a new one; set it
+    // explicitly when something outside the process needs to predict it.
+    instanceId: process.env.AGENTS_OBSERVE_INSTANCE_ID || '',
+    entrypointMarker: process.env.AGENTS_OBSERVE_ENTRYPOINT_MARKER || 'agents-observe-collector',
+    healthGraceSeconds: parseInt(process.env.AGENTS_OBSERVE_HEALTH_GRACE || '30', 10),
+    heartbeatIntervalMs: parseInt(process.env.AGENTS_OBSERVE_HEARTBEAT_INTERVAL_MS || '5000', 10),
+    lockSettleSeconds: parseInt(process.env.AGENTS_OBSERVE_LOCK_SETTLE || '2', 10),
+    procRoot: process.env.AGENTS_OBSERVE_PROC_ROOT || '/proc',
+  },
+
   transcriptStats: {
     enabled: process.env.AGENTS_OBSERVE_TRANSCRIPT_STATS !== '0',
     // Per-agent-class bind-mount bases. The runtime tries each pair when

@@ -5,13 +5,35 @@ them flowing to the dashboard. Supervision exists to guarantee one property:
 
 > **Exactly one healthy collector per data root — no duplicates, no silent absence.**
 
-This document is the contract. The primitives that implement it live in
+This document is the contract. The shell primitives that implement it live in
 `hooks/scripts/supervision/lib/`; the read-only diagnostic is
-`hooks/scripts/supervision/observe-health.sh`.
+`hooks/scripts/supervision/observe-health.sh`. The collector's own half lives in
+`app/server/src/supervision/`, one TypeScript module per shell file.
 
-> **Status:** these are supervision primitives only. Nothing in the hook, the CLI,
-> or the server calls them yet — event delivery is unchanged. Wiring the collector
-> and the supervisor on top of them is later work.
+> **Status:** the collector claims the lock, publishes the heartbeat, and reports
+> the health predicate on `/api/health`. The hook, the CLI, and event delivery are
+> unchanged; there is no supervisor arm and no spool yet.
+
+## Two implementations, one contract
+
+The collector is a long-lived Node service, so it reads and writes this state
+in-process rather than shelling out on every heartbeat tick. That means the same
+rules exist twice — once in bash, once in TypeScript:
+
+| Shell                                   | TypeScript                              |
+| --------------------------------------- | --------------------------------------- |
+| `lib/observe-env.sh`                    | `app/server/src/supervision/paths.ts`   |
+| `lib/observe-process.sh`                | `.../process-identity.ts`               |
+| `lib/observe-lock.sh`                   | `.../lock.ts`                           |
+| `lib/observe-heartbeat.sh` (publishing) | `.../heartbeat.ts`                      |
+| `observe_collector_healthy`             | `.../health.ts`                         |
+| —                                       | `.../collector.ts` (lifecycle)          |
+
+Two implementations of one contract drift unless something keeps them honest, so
+the collector's tests run the *shipped shell code* against state the TypeScript
+side produced: every health status, every data-root safety rule, and the heartbeat
+field reader are asserted to agree. If a change makes them disagree, those tests
+fail rather than the two halves quietly diverging in production.
 
 ## Vocabulary
 
@@ -39,7 +61,7 @@ $AGENTS_OBSERVE_DATA_ROOT/runtime/
     instance-id              this collector run
     started-at               epoch seconds the lock was claimed
   collector-start.lock/      held only across a start attempt
-  collector.heartbeat        instanceId / pid / updatedAt
+  collector.heartbeat        one key=value per line — see below
   collector-lifecycle.log    append-only diagnostic ledger
 ```
 
@@ -60,6 +82,13 @@ instead of in a second location.
 | `AGENTS_OBSERVE_HEALTH_URL`         | *(empty)*                  | HTTP health endpoint; empty = leg skipped   |
 | `AGENTS_OBSERVE_LOCK_SETTLE`        | `2`                        | Grace for a lock still being written, seconds|
 | `AGENTS_OBSERVE_PROC_ROOT`          | `/proc`                    | Where process identity is read from         |
+| `AGENTS_OBSERVE_HEARTBEAT_INTERVAL_MS` | `5000`                  | How often the collector republishes         |
+| `AGENTS_OBSERVE_INSTANCE_ID`        | *(a fresh UUID)*           | Pin the instance id for this run            |
+
+`AGENTS_OBSERVE_HEALTH_URL` is still empty by default. Point it at
+`http://127.0.0.1:<port>/api/health` to turn the shell diagnostic's HTTP leg on;
+the collector's own predicate has nothing to check, because a caller reading it
+over HTTP has already exercised that leg.
 
 ## Invariants
 
@@ -111,6 +140,66 @@ any path is built.
 create the runtime directory — a diagnostic that mutates changes the answer it was
 asked to report.
 
+**8. Shutdown only ever releases what this instance still owns.**
+Before removing anything, the collector checks that the lock still names its own
+`instanceId` *and* this data root. If it does not, a successor owns the data root
+and shutdown touches nothing at all — not the lock, not the heartbeat. A collector
+that was declared abandoned and replaced must never delete its replacement's state
+on its way out, and that is one condition rather than several so it cannot be half
+enforced.
+
+## Collector lifecycle
+
+**Startup.** Claim the lock *before* opening the database or the port, write the
+identity metadata, then start the heartbeat timer once the things it reports on
+exist. Refusal is immediate and deterministic: if another live, identity-matched
+collector already owns the data root, the process exits **3** with a message
+naming the lock. It does not wait, retry, or take the lock away — waiting would
+leave two half-started collectors racing whenever the first one is slow. A lock
+whose owner is *provably* gone is reclaimed first, and that judgement belongs
+entirely to `observe_collector_lock_is_abandoned` (and its TypeScript mirror);
+nothing in the server second-guesses it.
+
+**Running.** A background timer republishes the heartbeat every
+`AGENTS_OBSERVE_HEARTBEAT_INTERVAL_MS`, sampling the database and the HTTP
+listener each tick so the heartbeat proves the collector is *working*, not merely
+alive. The listener also republishes once as soon as it binds.
+
+**Shutdown.** SIGTERM/SIGINT run, in order: stop the heartbeat, stop accepting new
+work, close HTTP and WebSocket, close the database, then release the heartbeat and
+the lock under invariant 8. Every other exit path — the idle auto-shutdown, a bind
+failure — goes through the same ownership-checked release via `process.on('exit')`.
+
+| Exit | Meaning                                                     |
+| ---- | ----------------------------------------------------------- |
+| `0`  | Graceful shutdown; lock and heartbeat released.             |
+| `2`  | Unusable supervision configuration (no safe data root).     |
+| `3`  | Another live collector already owns this data root.         |
+
+## Heartbeat file
+
+One `key=value` per line, written to a temp file and renamed so a reader never
+sees a half-written record:
+
+```
+schemaVersion=1
+instanceId=6f2d…
+pid=48213
+startedAt=1785076398
+updatedAt=1785076403
+databaseHealthy=true
+httpHealthy=true
+lastCommittedEventId=
+spoolPending=
+```
+
+It is deliberately **not** JSON: the shell reader that ships with the kernel is
+line-oriented, and a JSON file would be unreadable to `observe-health.sh`. The
+field set is the one the supervision plan specifies, and `/api/health` renders
+exactly these fields as JSON — which is where a JSON shape belongs.
+`lastCommittedEventId` and `spoolPending` are reserved keys, empty until the spool
+exists, so readers do not have to cope with the field set changing later.
+
 ## Health predicate
 
 The collector is healthy when **all** of these hold:
@@ -124,8 +213,46 @@ The collector is healthy when **all** of these hold:
 7. the heartbeat is within the grace window, and
 8. the HTTP health check succeeds — when one is configured.
 
-The HTTP leg is currently unconfigured, so it reports `skipped` and does not fail
+The HTTP leg is unconfigured by default, so it reports `skipped` and does not fail
 health. Setting `AGENTS_OBSERVE_HEALTH_URL` turns it on with no API change.
+
+The collector computes the same predicate in-process and adds one condition the
+shell cannot express: the lock must name *this* instance. `observe-health.sh` has
+no caller identity, so it can only ask whether *a* collector is healthy here; the
+collector can also ask whether that collector is itself, and reports
+`invalid-owner reason=instance-mismatch` when it is not.
+
+## Reading it over HTTP
+
+`GET /api/health` carries a `collector` block — `null` when supervision is not
+running:
+
+```json
+{
+  "ok": true,
+  "collector": {
+    "schemaVersion": 1,
+    "instanceId": "6f2d…",
+    "pid": 48213,
+    "dataRoot": "/home/you/.agents-observe",
+    "startedAt": 1785076398,
+    "updatedAt": 1785076403,
+    "databaseHealthy": true,
+    "httpHealthy": true,
+    "lastCommittedEventId": null,
+    "spoolPending": null,
+    "status": "healthy",
+    "reason": null,
+    "heartbeatAgeSeconds": 0
+  }
+}
+```
+
+`status` and `reason` are the predicate; the rest is the heartbeat this instance
+last published. The block deliberately does **not** drive `ok` or the HTTP status
+code — that endpoint is how the CLI decides the server is up, and turning it into
+a 503 over a momentarily stale heartbeat would make a supervisor restart a server
+that is serving traffic perfectly well.
 
 ## Diagnostic output
 

@@ -146,6 +146,8 @@ export interface EventStore {
    *  these are genuinely user-actionable. */
   getUnassignedSessions(limit?: number): Promise<any[]>
   healthCheck(): Promise<{ ok: boolean; error?: string }>
+  /** Close the underlying handle. Called once, on graceful shutdown. */
+  close(): void
   /**
    * Scan all tables for rows with broken foreign keys and repair them.
    * - Sessions with invalid project_id → project_id set to NULL

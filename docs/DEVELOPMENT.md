@@ -41,10 +41,12 @@ In dev mode, client and server run as separate processes on separate ports. In p
 
 ```
 app/server/        # Hono server, SQLite, WebSocket
+  src/supervision/ # Collector lock, heartbeat, and health predicate
 app/client/        # React 19 + shadcn dashboard
 hooks/scripts/     # Hook script, CLI, MCP server
   lib/             # Shared libs: config, docker, fs, http, hooks, callbacks, logger
     agents/        # Agent-class-specific libs (claude-code, codex, unknown)
+  supervision/     # Shell-side supervision primitives + health diagnostic
 hooks/hooks.json   # Plugin hook definitions
 skills/            # /observe skill
 scripts/           # Release and test harness scripts
@@ -61,8 +63,9 @@ start.mjs          # Local server entrypoint (non-Docker)
 ## Environment Variables
 
 All CLI env vars are read in `hooks/scripts/lib/config.mjs`; server env
-vars in `app/server/src/config.ts`; collector supervision env vars (shell,
-unwired so far) in `hooks/scripts/supervision/lib/observe-env.sh`. For the
+vars in `app/server/src/config.ts`; collector supervision env vars in
+`hooks/scripts/supervision/lib/observe-env.sh` (shell side) and
+`config.supervision` in `app/server/src/config.ts` (server side). For the
 authoritative list of every env var the project reads, see
 [`ENVIRONMENT.md`](./ENVIRONMENT.md).
 
@@ -75,9 +78,15 @@ Create a `.env` in the worktree root:
 ```bash
 AGENTS_OBSERVE_SERVER_PORT=4982
 AGENTS_OBSERVE_DEV_CLIENT_PORT=5179
+AGENTS_OBSERVE_DATA_ROOT=/home/you/.agents-observe-worktree-1
 ```
 
 Pick any unused ports — don't collide with the main checkout (4981/5174) or other worktrees. The `.env` is gitignored. The justfile loads it automatically.
+
+Each worktree also needs its own **data root**. The collector claims a singleton
+lock per data root, so a second server sharing one refuses to start and exits `3`
+even on a different port — see
+[collector-supervision.md](./collector-supervision.md#collector-lifecycle).
 
 ### Merging worktrees
 

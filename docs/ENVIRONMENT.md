@@ -89,10 +89,18 @@ Controls where and how the server runs.
 ## Collector supervision
 
 Read by the shell-side supervision primitives in
-`hooks/scripts/supervision/lib/observe-env.sh`, not by `config.mjs`. Not
-wired into the hook, CLI, or server yet — see
+`hooks/scripts/supervision/lib/observe-env.sh` and by the server in
+`app/server/src/config.ts` (`config.supervision`), not by `config.mjs`. Both
+sides read and write the same files, so the names and defaults are shared. The
+hook and CLI are not wired to them. See
 [collector-supervision.md](./collector-supervision.md#configuration) for the
 full variable list, defaults, and the contract they support.
+
+The server uses them to claim `runtime/collector.lock` for its data root at
+startup, publish `runtime/collector.heartbeat` while it runs, and report the
+health predicate on `/api/health`. Two servers sharing one data root is refused:
+the second exits `3`. Give each a different `AGENTS_OBSERVE_DATA_ROOT` (or
+`AGENTS_OBSERVE_LOCAL_DATA_ROOT`) to run them side by side.
 
 ---
 

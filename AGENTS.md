@@ -58,10 +58,10 @@ Key points:
 - Use `just dev` for hot-reload development
 - **Run `just check` before every commit** — runs all tests + formatting
 - Use `just` commands for all dev tasks (not `npm` directly) — see `just --list`
-- Worktrees need a `.env` with unique ports (see DEVELOPMENT.md § Worktrees)
+- Worktrees need a `.env` with unique ports and a unique data root (see DEVELOPMENT.md § Worktrees)
 - All env vars are centralized in `hooks/scripts/lib/config.mjs` — never read `process.env` elsewhere
 - TypeScript throughout, kebab-case file names
-- Collector supervision (locks, heartbeat, process identity) has its own contract and invariants — read [docs/collector-supervision.md](docs/collector-supervision.md) before touching `hooks/scripts/supervision/`
+- Collector supervision (locks, heartbeat, process identity) has its own contract and invariants — read [docs/collector-supervision.md](docs/collector-supervision.md) before touching `hooks/scripts/supervision/` or `app/server/src/supervision/`. Those two are mirrored implementations of one on-disk contract; tests assert they agree, so change them together
 
 ## Commit Convention
 
