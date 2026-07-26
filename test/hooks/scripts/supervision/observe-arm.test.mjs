@@ -21,7 +21,10 @@ const execFileAsync = promisify(execFile)
 const SUPERVISION_DIR = join(process.cwd(), 'hooks/scripts/supervision')
 const ARM = join(SUPERVISION_DIR, 'observe-arm.sh')
 const STOP = join(SUPERVISION_DIR, 'observe-stop.sh')
-const FAKE_COLLECTOR = join(SUPERVISION_DIR, '../../../test/hooks/scripts/supervision/fixtures/fake-collector.sh')
+const FAKE_COLLECTOR = join(
+  SUPERVISION_DIR,
+  '../../../test/hooks/scripts/supervision/fixtures/fake-collector.sh',
+)
 
 const roots = []
 
@@ -112,9 +115,12 @@ describe('observe-arm.sh', () => {
     const { root, entry } = fixture()
     entry.port = await freePort()
     const dead = spawnFakeProcess(MARKER)
-    await runShell(`observe_runtime_ensure && observe_collector_lock_claim 'dead-instance' ${dead.pid}`, {
-      dataRoot: root,
-    })
+    await runShell(
+      `observe_runtime_ensure && observe_collector_lock_claim 'dead-instance' ${dead.pid}`,
+      {
+        dataRoot: root,
+      },
+    )
     killProcess(dead)
 
     const result = await start(root, entry.port)
