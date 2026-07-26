@@ -11,7 +11,7 @@ import type {
   StoredEvent,
   OrphanRepairResult,
 } from './types'
-import { DuplicateEventSignatureError } from './types'
+import { DuplicateEventSignatureError, DuplicateSpoolEventIdError } from './types'
 import type { Filter, FilterRow, FilterPattern } from '../types'
 import { randomUUID } from 'node:crypto'
 import { SEED_FILTERS } from './seed-filters'
@@ -378,6 +378,9 @@ export class SqliteAdapter implements EventStore {
     if (!postRebuildCols.some((c) => c.name === 'signature_hash')) {
       this.db.exec('ALTER TABLE events ADD COLUMN signature_hash TEXT')
     }
+    if (!postRebuildCols.some((c) => c.name === 'spool_event_id')) {
+      this.db.exec('ALTER TABLE events ADD COLUMN spool_event_id TEXT')
+    }
 
     // First-boot setup for the filters table. We don't have any users
     // in the wild with a partial filters schema yet (this branch hasn't
@@ -439,6 +442,9 @@ export class SqliteAdapter implements EventStore {
     )
     this.db.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_events_signature_hash ON events(signature_hash)',
+    )
+    this.db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_events_spool_event_id ON events(spool_event_id)',
     )
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id)')
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_start_cwd ON sessions(start_cwd)')
@@ -742,8 +748,8 @@ export class SqliteAdapter implements EventStore {
       result = this.db
         .prepare(
           `
-      INSERT INTO events (agent_id, session_id, hook_name, timestamp, created_at, cwd, _meta, payload, signature_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO events (agent_id, session_id, hook_name, timestamp, created_at, cwd, _meta, payload, signature_hash, spool_event_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
         )
         .run(
@@ -756,6 +762,7 @@ export class SqliteAdapter implements EventStore {
           params._meta != null ? JSON.stringify(params._meta) : null,
           JSON.stringify(params.payload),
           params.signatureHash ?? null,
+          params.spoolEventId ?? null,
         )
     } catch (err: unknown) {
       const e = err as { code?: string; message?: string }
@@ -765,6 +772,13 @@ export class SqliteAdapter implements EventStore {
         String(e.message ?? '').includes('events.signature_hash')
       ) {
         throw new DuplicateEventSignatureError(params.signatureHash)
+      }
+      if (
+        params.spoolEventId &&
+        e?.code === 'SQLITE_CONSTRAINT_UNIQUE' &&
+        String(e.message ?? '').includes('events.spool_event_id')
+      ) {
+        throw new DuplicateSpoolEventIdError(params.spoolEventId)
       }
       throw err
     }
@@ -789,6 +803,13 @@ export class SqliteAdapter implements EventStore {
     const row = this.db
       .prepare('SELECT id FROM events WHERE signature_hash = ? LIMIT 1')
       .get(hash) as { id: number } | undefined
+    return row ? { id: Number(row.id) } : null
+  }
+
+  async findEventBySpoolEventId(eventId: string): Promise<{ id: number } | null> {
+    const row = this.db
+      .prepare('SELECT id FROM events WHERE spool_event_id = ? LIMIT 1')
+      .get(eventId) as { id: number } | undefined
     return row ? { id: Number(row.id) } : null
   }
 

@@ -57,6 +57,7 @@ describe('runtimePaths', () => {
       startLockDir: '/root/runtime/collector-start.lock',
       heartbeatFile: '/root/runtime/collector.heartbeat',
       lifecycleLog: '/root/runtime/collector-lifecycle.log',
+      spoolDir: '/root/runtime/spool',
     })
   })
 })

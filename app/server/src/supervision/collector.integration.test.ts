@@ -6,7 +6,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { createServer } from 'node:net'
 
 import { readHeartbeat } from './heartbeat'
@@ -142,9 +143,8 @@ describe('a running collector', () => {
       dataRoot: root,
       databaseHealthy: true,
       httpHealthy: true,
-      // Reserved until the spool lands.
       lastCommittedEventId: null,
-      spoolPending: null,
+      spoolPending: 0,
     })
     expect(body.collector.instanceId).toBe(lock.instanceId)
     expect(String(body.collector.pid)).toBe(lock.pid)
@@ -223,6 +223,43 @@ describe('two data roots', () => {
       }
     },
     BOOT_TIMEOUT_MS * 2,
+  )
+})
+
+describe('spool heartbeat reporting', () => {
+  it(
+    'reports committed spool progress through /api/health',
+    async () => {
+      const root = makeDataRoot('observe-spool-health')
+      try {
+        const paths = runtimePaths(root)
+        mkdirSync(join(paths.spoolDir, 'pending'), { recursive: true })
+        writeFileSync(
+          join(paths.spoolDir, 'pending/health-event.json'),
+          JSON.stringify({
+            eventId: 'health-event',
+            timestamp: Date.now(),
+            envelope: {
+              agentId: 'spool-agent',
+              sessionId: 'spool-session',
+              hookName: 'SessionStart',
+              agentClass: 'claude-code',
+              payload: {},
+            },
+          }),
+        )
+        const instance = startServer(root, await freePort())
+        await waitUntilServing(instance)
+        await waitFor(async () => {
+          const collector = (await health(instance)).collector
+          return collector?.lastCommittedEventId === 'health-event' && collector?.spoolPending === 0
+        })
+      } finally {
+        while (running.length) await stop(running.pop()!)
+        removeDataRoot(root)
+      }
+    },
+    BOOT_TIMEOUT_MS,
   )
 })
 

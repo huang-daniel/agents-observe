@@ -64,6 +64,10 @@ $AGENTS_OBSERVE_DATA_ROOT/runtime/
   collector-start.lock/      held only across a start attempt
   collector.heartbeat        one key=value per line — see below
   collector-lifecycle.log    append-only diagnostic ledger
+  spool/                     durable event queue
+    pending/                 accepted entries awaiting a SQLite commit
+    processing/              entry currently being committed; recovered on restart
+    failed/                  entries that exhausted commit retries
 ```
 
 `AGENTS_OBSERVE_DATA_ROOT` falls back to `AGENTS_OBSERVE_LOCAL_DATA_ROOT` (the data
@@ -229,8 +233,10 @@ It is deliberately **not** JSON: the shell reader that ships with the kernel is
 line-oriented, and a JSON file would be unreadable to `observe-health.sh`. The
 field set is the one the supervision plan specifies, and `/api/health` renders
 exactly these fields as JSON — which is where a JSON shape belongs.
-`lastCommittedEventId` and `spoolPending` are reserved keys, empty until the spool
-exists, so readers do not have to cope with the field set changing later.
+`lastCommittedEventId` is the stable id of the most recently SQLite-committed
+spool entry (empty until the first commit). `spoolPending` is the current count
+of entries awaiting commit, including an entry in `processing`. Failed entries
+are retained under `spool/failed` and do not contribute to that count.
 
 ## Health predicate
 
@@ -272,7 +278,7 @@ running:
     "databaseHealthy": true,
     "httpHealthy": true,
     "lastCommittedEventId": null,
-    "spoolPending": null,
+    "spoolPending": 0,
     "status": "healthy",
     "reason": null,
     "heartbeatAgeSeconds": 0
