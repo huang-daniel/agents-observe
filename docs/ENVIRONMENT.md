@@ -102,6 +102,10 @@ health predicate on `/api/health`. Two servers sharing one data root is refused:
 the second exits `3`. Give each a different `AGENTS_OBSERVE_DATA_ROOT` (or
 `AGENTS_OBSERVE_LOCAL_DATA_ROOT`) to run them side by side.
 
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AGENTS_OBSERVE_COLLECTOR_ENTRYPOINT` | *(empty)* | Optional executable the supervisor arm starts instead of the bundled Node entrypoint. Primarily useful for integration harnesses. |
+
 ---
 
 ## Test harness / external

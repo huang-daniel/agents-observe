@@ -11,8 +11,9 @@ This document is the contract. The shell primitives that implement it live in
 `app/server/src/supervision/`, one TypeScript module per shell file.
 
 > **Status:** the collector claims the lock, publishes the heartbeat, and reports
-> the health predicate on `/api/health`. The hook, the CLI, and event delivery are
-> unchanged; there is no supervisor arm and no spool yet.
+> the health predicate on `/api/health`. The shell supervisor arm can attach,
+> start, restart, and stop that collector. The hook, the CLI, event delivery, and
+> durable spool are unchanged.
 
 ## Two implementations, one contract
 
@@ -78,6 +79,7 @@ instead of in a second location.
 | `AGENTS_OBSERVE_HEALTH_GRACE`       | `30`                       | Heartbeat freshness window, seconds         |
 | `AGENTS_OBSERVE_START_TIMEOUT`      | `15`                       | Wait for a new collector to confirm, seconds|
 | `AGENTS_OBSERVE_START_POLL`         | `0.2`                      | Poll interval while confirming, seconds     |
+| `AGENTS_OBSERVE_COLLECTOR_ENTRYPOINT` | *(empty)*                 | Optional collector executable for the arm   |
 | `AGENTS_OBSERVE_ENTRYPOINT_MARKER`  | `agents-observe-collector` | Stable marker expected in the command line  |
 | `AGENTS_OBSERVE_HEALTH_URL`         | *(empty)*                  | HTTP health endpoint; empty = leg skipped   |
 | `AGENTS_OBSERVE_LOCK_SETTLE`        | `2`                        | Grace for a lock still being written, seconds|
@@ -149,6 +151,36 @@ on its way out, and that is one condition rather than several so it cannot be ha
 enforced.
 
 ## Collector lifecycle
+
+### Supervisor arm
+
+`observe-arm.sh <attach|start|restart>` is the calling-side supervisor. It is
+separate from the collector process and starts the server detached, so returning
+from the arm never tears down a confirmed collector. `observe-stop.sh` is the
+matching graceful stop command. Each decision and outcome is appended (best
+effort) to `collector-lifecycle.log`; the ledger is diagnostic only and never a
+source of ownership truth.
+
+- `attach` reports success only when `observe_collector_healthy` succeeds. It
+  reports the lock's PID and instance id and never spawns a process.
+- `start` is idempotent: a healthy owner is attached to. Otherwise it waits up
+  to `AGENTS_OBSERVE_START_TIMEOUT` for `collector-start.lock`; this bounded
+  wait is the explicit concurrent-start policy. Once it owns that lock it checks
+  health again, reclaims only a lock that `observe_collector_lock_is_abandoned`
+  proves abandoned, and starts one collector. It reports `started` only after
+  the canonical predicate succeeds for that newly spawned PID (including the
+  optional HTTP health leg).
+- `restart` sends `TERM` through `observe_signal_locked_process`, waits for the
+  collector to release both its lock and heartbeat, then follows `start`. With
+  no live owner it is simply `start`.
+- `observe-stop.sh` likewise signals only an identity-matched owner and waits
+  for that collector to clear its own files. It never removes lock or heartbeat
+  files itself. A data root with no live owner is a clean no-op.
+
+`observe-status.sh` is deliberately a thin wrapper over `observe-health.sh`.
+It does not add a "start in progress" state: a held start lock says nothing
+about collector ownership or working health, and health remains exactly the
+canonical predicate below.
 
 **Startup.** Claim the lock *before* opening the database or the port, write the
 identity metadata, then start the heartbeat timer once the things it reports on
