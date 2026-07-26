@@ -41,8 +41,9 @@ export function isToolFailure(payload: Record<string, unknown>): boolean {
 function bashSummary(input: Record<string, unknown>): string {
   const command = typeof input.command === 'string' ? oneLine(input.command) : ''
   if (!command) return ''
-  const first = command.split(' ')[0]?.replace(/^.*\//, '')
-  return first ? `[${first}] ${command.slice(first.length).trim()}`.trim() : command
+  const firstToken = command.split(' ')[0] ?? ''
+  const first = firstToken.replace(/^.*\//, '')
+  return first ? `[${first}] ${command.slice(firstToken.length).trim()}`.trim() : command
 }
 
 function patchSummary(input: Record<string, unknown>): string {
