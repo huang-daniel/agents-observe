@@ -39,7 +39,12 @@ observe_spool_write() { # [event-id]
   }
   cat >> "$tmp" || { rm -f "$tmp"; return 1; }
   printf '}\n' >> "$tmp" || { rm -f "$tmp"; return 1; }
-  mv -n "$tmp" "$target" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  # ln fails with EEXIST when target is already there, unlike `mv -n`, which
+  # exits 0 even when it silently skips an existing destination.
+  ln "$tmp" "$target" 2>/dev/null
+  local linked=$?
+  rm -f "$tmp"
+  [ "$linked" -eq 0 ] || return 1
   printf '%s\n' "$event_id"
 }
 

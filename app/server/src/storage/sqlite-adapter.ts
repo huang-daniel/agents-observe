@@ -806,13 +806,6 @@ export class SqliteAdapter implements EventStore {
     return row ? { id: Number(row.id) } : null
   }
 
-  async findEventBySpoolEventId(eventId: string): Promise<{ id: number } | null> {
-    const row = this.db
-      .prepare('SELECT id FROM events WHERE spool_event_id = ? LIMIT 1')
-      .get(eventId) as { id: number } | undefined
-    return row ? { id: Number(row.id) } : null
-  }
-
   async getSessionsWithPendingNotifications(sinceTs: number): Promise<any[]> {
     // A session is "pending" when `pending_notification_ts` is set. The
     // column is driven entirely by envelope flags at event-insert time —

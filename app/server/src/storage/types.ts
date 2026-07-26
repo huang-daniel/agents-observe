@@ -128,7 +128,6 @@ export interface EventStore {
   touchSessionActivity(sessionId: string, timestamp: number): Promise<void>
   insertEvent(params: InsertEventParams): Promise<InsertEventResult>
   findEventBySignatureHash(hash: string): Promise<{ id: number } | null>
-  findEventBySpoolEventId(eventId: string): Promise<{ id: number } | null>
   getProjects(): Promise<any[]>
   getSessionsForProject(projectId: number): Promise<any[]>
   getSessionById(sessionId: string): Promise<any | null>
