@@ -20,7 +20,7 @@ import { runtimePaths } from './paths'
 interface RawHookEntry {
   agentClass?: string
   projectSlug?: string
-  notificationOnEvents?: string
+  notificationOnEvents?: string | null
   maxImageDataChars?: string
   payload: Record<string, unknown>
 }
@@ -151,7 +151,7 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
     const configured = entry.rawHook.agentClass
     const agentClass = agents.getAgentClass({ agentClass: configured }, null, entry.rawHook.payload)
     const notificationOnEvents =
-      entry.rawHook.notificationOnEvents === undefined
+      entry.rawHook.notificationOnEvents == null
         ? undefined
         : entry.rawHook.notificationOnEvents
             .split(',')
@@ -172,7 +172,8 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
     const response = payload.tool_response
     if (config.maxImageDataChars > 0 && Array.isArray(response)) {
       for (const item of response) {
-        const source = item && typeof item === 'object' ? item.source : null
+        if (!item || typeof item !== 'object' || item.type !== 'image') continue
+        const source = item.source
         if (
           source &&
           typeof source === 'object' &&

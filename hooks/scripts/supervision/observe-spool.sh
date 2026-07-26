@@ -52,7 +52,7 @@ observe_spool_write() { # [event-id]
 # the long-lived collector removes a Node process from the hot hook path while
 # retaining the exact agent-specific envelope builders used by observe_cli.
 observe_spool_write_hook() { # [event-id]
-  local event_id=${1:-} agent_class notification_events project_slug max_image_data tmp target
+  local event_id=${1:-} agent_class notification_events notification_events_json project_slug max_image_data tmp target
   observe_spool_ensure || return $?
   [ -n "$event_id" ] || event_id=$(observe_spool_event_id)
   case "$event_id" in *[!A-Za-z0-9._-]*|'') return 2 ;; esac
@@ -61,7 +61,6 @@ observe_spool_write_hook() { # [event-id]
   # restricted to the registry's known values before it becomes JSON.
   agent_class=${AGENTS_OBSERVE_AGENT_CLASS:-claude-code}
   case "$agent_class" in claude-code|codex|default) ;; *) agent_class=default ;; esac
-  notification_events=${AGENTS_OBSERVE_NOTIFICATION_ON_EVENTS-}
   project_slug=${AGENTS_OBSERVE_PROJECT_SLUG-}
   max_image_data=${AGENTS_OBSERVE_MAX_IMAGE_DATA_CHARS:-50000}
   case "$max_image_data" in ''|*[!0-9-]*) max_image_data=50000 ;; esac
@@ -71,15 +70,24 @@ observe_spool_write_hook() { # [event-id]
   [ ! -e "$target" ] || return 1
   # Hook configuration is encoded as strings; the collector parses the two
   # list/number settings exactly as getConfig does. Escape the user-configured
-  # string values so they cannot corrupt the durable JSON record.
-  notification_events=${notification_events//\\/\\\\}
-  notification_events=${notification_events//\"/\\\"}
-  notification_events=${notification_events//$'\n'/\\n}
+  # string values so they cannot corrupt the durable JSON record. Notification
+  # events must preserve getConfig's three states: unset (JSON null, falls
+  # back to the agent-lib default), explicitly empty (JSON "", opts out of
+  # all notifications), and an explicit list.
+  if [ -n "${AGENTS_OBSERVE_NOTIFICATION_ON_EVENTS+set}" ]; then
+    notification_events=$AGENTS_OBSERVE_NOTIFICATION_ON_EVENTS
+    notification_events=${notification_events//\\/\\\\}
+    notification_events=${notification_events//\"/\\\"}
+    notification_events=${notification_events//$'\n'/\\n}
+    notification_events_json="\"$notification_events\""
+  else
+    notification_events_json=null
+  fi
   project_slug=${project_slug//\\/\\\\}
   project_slug=${project_slug//\"/\\\"}
   project_slug=${project_slug//$'\n'/\\n}
-  printf '{"eventId":"%s","timestamp":%s,"rawHook":{"agentClass":"%s","projectSlug":"%s","notificationOnEvents":"%s","maxImageDataChars":"%s","payload":' \
-    "$event_id" "$(( $(observe_now_epoch) * 1000 ))" "$agent_class" "$project_slug" "$notification_events" "$max_image_data" > "$tmp" || return 1
+  printf '{"eventId":"%s","timestamp":%s,"rawHook":{"agentClass":"%s","projectSlug":"%s","notificationOnEvents":%s,"maxImageDataChars":"%s","payload":' \
+    "$event_id" "$(( $(observe_now_epoch) * 1000 ))" "$agent_class" "$project_slug" "$notification_events_json" "$max_image_data" > "$tmp" || return 1
   cat >> "$tmp" || { rm -f "$tmp"; return 1; }
   printf '}}\n' >> "$tmp" || { rm -f "$tmp"; return 1; }
   ln "$tmp" "$target" 2>/dev/null
