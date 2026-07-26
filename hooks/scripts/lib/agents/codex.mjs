@@ -1,11 +1,15 @@
 // hooks/scripts/lib/agents/codex.mjs
-// Codex hook lib. Composes default.mjs and overrides agentClass only —
+// Codex hook lib. Composes default.mjs and overrides agentClass, lifecycle
+// flags, and Codex-specific metadata —
 // Codex hook payloads use the same identity-field shape as Claude
 // (session_id, agent_id, hook_event_name, cwd, transcript_path), so the
 // default lib's extraction works without further overrides.
 
 import { readFileSync } from 'node:fs'
 import { defaultLib } from './default.mjs'
+
+const CLEARS_NOTIFICATION = new Set(['UserPromptSubmit'])
+const STOPS_SESSION = new Set(['SessionEnd'])
 
 export function buildEnv(config) {
   return defaultLib.buildEnv(config)
@@ -14,11 +18,9 @@ export function buildEnv(config) {
 /**
  * Build the event envelope for a Codex hook payload.
  *
- * Codex does NOT have Claude's UserPromptSubmit/SessionEnd hooks, so we
- * never set flags.clearsNotification or flags.stopsSession. Notification
- * opt-in is handled by the default lib via
- * AGENTS_OBSERVE_NOTIFICATION_ON_EVENTS. If future Codex versions add
- * equivalent semantic events, set the flags here.
+ * Codex shares the SessionStart, UserPromptSubmit, SessionEnd, and Stop
+ * lifecycle semantics used by the dashboard. Notification opt-in is handled
+ * by the default lib via AGENTS_OBSERVE_NOTIFICATION_ON_EVENTS.
  *
  * @param {object} config
  * @param {object} log
@@ -28,6 +30,27 @@ export function buildEnv(config) {
 export function buildHookEvent(config, log, payload) {
   const result = defaultLib.buildHookEvent(config, log, payload)
   result.envelope.agentClass = 'codex'
+
+  const flags = result.envelope.flags ?? {}
+  const hookName = result.envelope.hookName
+  if (CLEARS_NOTIFICATION.has(hookName)) flags.clearsNotification = true
+  if (STOPS_SESSION.has(hookName)) flags.stopsSession = true
+  if (hookName === 'SessionStart') flags.resolveProject = true
+  if (Object.keys(flags).length > 0) result.envelope.flags = flags
+
+  const codex = {}
+  const fields = [
+    ['turnId', 'turn_id'],
+    ['model', 'model'],
+    ['permissionMode', 'permission_mode'],
+    ['agentType', 'agent_type'],
+  ]
+  for (const [normalized, raw] of fields) {
+    if (payload?.[raw] !== undefined) codex[normalized] = payload[raw]
+  }
+  if (Object.keys(codex).length > 0) {
+    result.envelope._meta = { ...result.envelope._meta, codex }
+  }
   return result
 }
 

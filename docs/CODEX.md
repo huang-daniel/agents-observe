@@ -43,9 +43,15 @@ node scripts/codex-hooks.mjs install --codex-home /path/to/codex-home
 The global installer registers the same event set currently used by the repository-local Codex integration:
 
 - `SessionStart`
+- `SessionEnd`
 - `UserPromptSubmit`
 - `PreToolUse`
 - `PostToolUse`
+- `PermissionRequest`
+- `PreCompact`
+- `PostCompact`
+- `SubagentStart`
+- `SubagentStop`
 - `Stop`
 
 Every command sets `AGENTS_OBSERVE_AGENT_CLASS=codex` before invoking the shared hook entrypoint.

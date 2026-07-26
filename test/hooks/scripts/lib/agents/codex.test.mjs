@@ -144,21 +144,59 @@ describe('codex.buildHookEvent', () => {
     expect(envelope._meta?.session?.transcriptPath).toBe('/tmp/sess.jsonl')
   })
 
-  it('does not set Claude-only flags (clearsNotification, stopsSession, resolveProject)', () => {
-    for (const hook_event_name of [
-      'UserPromptSubmit',
-      'SessionEnd',
-      'SessionStart',
-      'some-other-event',
-    ]) {
+  it('sets Codex lifecycle flags', () => {
+    const events = [
+      ['SessionStart', 'resolveProject'],
+      ['UserPromptSubmit', 'clearsNotification'],
+      ['SessionEnd', 'stopsSession'],
+    ]
+    for (const [hook_event_name, flag] of events) {
       const { envelope } = buildHookEvent(config, makeLog(), {
         hook_event_name,
         session_id: 'cdx-1',
       })
-      expect(envelope.flags?.clearsNotification).toBeUndefined()
-      expect(envelope.flags?.stopsSession).toBeUndefined()
-      expect(envelope.flags?.resolveProject).toBeUndefined()
+      expect(envelope.flags?.[flag]).toBe(true)
     }
+
+    const { envelope } = buildHookEvent(config, makeLog(), {
+      hook_event_name: 'Stop',
+      session_id: 'cdx-1',
+    })
+    expect(envelope.flags?.stopsSession).toBeUndefined()
+  })
+
+  it('lifts stable Codex fields into _meta.codex without changing the payload', () => {
+    const payload = {
+      hook_event_name: 'PreToolUse',
+      session_id: 'cdx-1',
+      turn_id: 'turn-1',
+      model: 'gpt-5.6-codex',
+      permission_mode: 'workspace-write',
+      agent_type: 'worker',
+      nested: { preserved: true },
+    }
+    const snapshot = structuredClone(payload)
+
+    const { envelope } = buildHookEvent(config, makeLog(), payload)
+
+    expect(envelope._meta?.codex).toEqual({
+      turnId: 'turn-1',
+      model: 'gpt-5.6-codex',
+      permissionMode: 'workspace-write',
+      agentType: 'worker',
+    })
+    expect(envelope.payload).toBe(payload)
+    expect(payload).toEqual(snapshot)
+  })
+
+  it('omits absent Codex metadata fields', () => {
+    const { envelope } = buildHookEvent(config, makeLog(), {
+      hook_event_name: 'PreToolUse',
+      session_id: 'cdx-1',
+      turn_id: 'turn-1',
+    })
+
+    expect(envelope._meta?.codex).toEqual({ turnId: 'turn-1' })
   })
 
   it('does NOT mutate the input payload', () => {
@@ -174,12 +212,17 @@ describe('codex.buildHookEvent', () => {
   })
 
   describe('notificationOnEvents opt-in', () => {
-    it('default config: no events fire startsNotification (apart from "Notification")', () => {
-      const { envelope } = buildHookEvent(config, makeLog(), {
-        hook_event_name: 'Stop',
-        session_id: 'cdx-1',
-      })
-      expect(envelope.flags).toBeUndefined()
+    it('configured Stop notification starts a notification without stopping the session', () => {
+      const { envelope } = buildHookEvent(
+        { ...config, notificationOnEvents: ['Stop'] },
+        makeLog(),
+        {
+          hook_event_name: 'Stop',
+          session_id: 'cdx-1',
+        },
+      )
+      expect(envelope.flags?.startsNotification).toBe(true)
+      expect(envelope.flags?.stopsSession).toBeUndefined()
     })
 
     it('opting Stop into notificationOnEvents fires startsNotification on Stop', () => {
