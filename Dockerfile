@@ -42,4 +42,4 @@ COPY CHANGELOG.md /app/CHANGELOG.md
 EXPOSE 4981
 
 WORKDIR /app/server
-CMD ["npx", "tsx", "src/index.ts"]
+CMD ["node", "--import", "tsx", "src/index.ts"]
