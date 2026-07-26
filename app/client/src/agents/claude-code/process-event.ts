@@ -51,6 +51,8 @@ const LABELS: Record<string, string> = {
   WorktreeCreate: 'Worktree',
   WorktreeRemove: 'Worktree',
   stop_hook_summary: 'Stop',
+  SubagentStart: 'SubStart',
+  SubagentStop: 'SubStop',
 }
 
 /**
