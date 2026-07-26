@@ -72,6 +72,24 @@ describe('Codex processEvent', () => {
     })
   })
 
+  test('strips a path-prefixed bash command by the original token length', () => {
+    const pre = processEvent(
+      {
+        id: 1,
+        agentId: 'a',
+        hookName: 'PreToolUse',
+        timestamp: 1,
+        payload: {
+          tool_use_id: 'y',
+          tool_name: 'Bash',
+          tool_input: { command: '/usr/bin/git status --short' },
+        },
+      },
+      context(),
+    ).event
+    expect(pre.summary).toBe('[git] status --short')
+  })
+
   test('marks only explicit Codex post-response failure fields as failed', () => {
     const failed = processEvent(
       {
