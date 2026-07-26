@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import type { Agent, ServerAgent, ParsedEvent } from '@/types'
+import { deriveLifecycleStatus } from '@/agents/shared/lifecycle-status'
 
 // Module-level dedup — shared across all useAgents instances so multiple
 // components (event-stream, combobox, timeline) don't each fire a fetch
@@ -36,13 +37,11 @@ export function useAgents(sessionId: string | null, events: ParsedEvent[] | unde
         eventCount: number
         firstEventAt: number
         lastEventAt: number
-        lastStoppedAt: number // timestamp of last stop signal, 0 if never
         cwd: string | null
       }
     >()
     const parents = new Map<string, string>() // childAgentId -> parentAgentId
     if (!events) return { agentStats: stats, parentMap: parents }
-    const stopSubtypes = new Set(['Stop', 'SessionEnd', 'stop_hook_summary'])
     for (const e of events) {
       let s = stats.get(e.agentId)
       if (!s) {
@@ -50,7 +49,6 @@ export function useAgents(sessionId: string | null, events: ParsedEvent[] | unde
           eventCount: 0,
           firstEventAt: e.timestamp,
           lastEventAt: e.timestamp,
-          lastStoppedAt: 0,
           cwd: null,
         }
         stats.set(e.agentId, s)
@@ -62,17 +60,6 @@ export function useAgents(sessionId: string | null, events: ParsedEvent[] | unde
       s.eventCount++
       if (e.timestamp < s.firstEventAt) s.firstEventAt = e.timestamp
       if (e.timestamp > s.lastEventAt) s.lastEventAt = e.timestamp
-      if (stopSubtypes.has(e.hookName ?? '')) {
-        s.lastStoppedAt = Math.max(s.lastStoppedAt, e.timestamp)
-      }
-      // SubagentStop targets the agent ID in the payload, not the event's agentId
-      if (e.hookName === 'SubagentStop') {
-        const targetId = (p as any)?.agent_id
-        if (targetId) {
-          const target = stats.get(targetId)
-          if (target) target.lastStoppedAt = Math.max(target.lastStoppedAt, e.timestamp)
-        }
-      }
       // Layer 3 hierarchy: PostToolUse:Agent declares tool_response.agentId
       // as a child of event.agentId. First-write wins (a child shouldn't
       // be re-parented mid-session under Claude Code semantics).
@@ -154,8 +141,7 @@ export function useAgents(sessionId: string | null, events: ParsedEvent[] | unde
         name: server?.name ?? null,
         agentType: server?.agentType ?? null,
         agentClass: server?.agentClass ?? null,
-        // Agent is stopped if the last stop signal came after or at the last activity
-        status: s.lastStoppedAt >= s.lastEventAt ? 'stopped' : 'active',
+        status: deriveLifecycleStatus(events ?? [], agentId),
         eventCount: s.eventCount,
         firstEventAt: s.firstEventAt,
         lastEventAt: s.lastEventAt,

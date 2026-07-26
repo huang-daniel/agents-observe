@@ -55,3 +55,10 @@ The global installer registers this event set:
 - `Stop`
 
 Every command sets `AGENTS_OBSERVE_AGENT_CLASS=codex` before invoking the shared hook entrypoint.
+
+## Visibility limits
+
+The dashboard shows only lifecycle and tool events that the local Codex hook runtime emits. A hosted
+tool or delegated service that does not emit a local `PreToolUse`/`PostToolUse` callback cannot be
+reconstructed reliably from the transcript, so Agents Observe leaves that activity absent rather than
+inventing a tool row. Transcript parsing remains a compatibility fallback for incomplete hook payloads.

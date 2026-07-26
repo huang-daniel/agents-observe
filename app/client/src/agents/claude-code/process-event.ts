@@ -1,41 +1,22 @@
 import type { RawEvent, ProcessingContext } from '../types'
 import type { ClaudeCodeEnrichedEvent } from './types'
-import { EVENT_ICON_REGISTRY } from '@/lib/event-icon-registry'
-import { getEventSummary, buildSearchText, isWeakSummary, truncate } from './helpers'
+import { getEventSummary, buildSearchText } from './helpers'
 import { deriveToolName } from './derivers'
 import { agentPatchDebouncer } from '@/lib/agent-patch-debouncer'
 import { applyFilters } from '@/lib/filters/matcher'
 import { passesAllFilter } from '@/lib/filters/all-filter'
+import { isWeakSummary, truncateSummary } from '../shared/failure-detection'
+import { extractResultText } from '../shared/result-text'
+import {
+  commonIconId,
+  commonLabel,
+  pairCompactCompletion,
+  pairToolCompletion,
+} from '../shared/tool-pairing'
+import { toolSummarySlots } from '../shared/summary-slots'
 
 /** Cap on a failure error promoted into a row summary — errors can be long. */
 const SUMMARY_MAX = 200
-
-/** Map (hookName, toolName) → registry icon id. Tool icons are prefixed
- *  `Tool` to disambiguate from hookName-shaped ids. */
-function pickIconId(hookName: string, toolName: string | null): string {
-  const isTool =
-    hookName === 'PreToolUse' || hookName === 'PostToolUse' || hookName === 'PostToolUseFailure'
-  if (isTool) {
-    if (toolName?.startsWith('mcp__')) return 'ToolMcp'
-    const map: Record<string, string> = {
-      Bash: 'ToolBash',
-      Read: 'ToolRead',
-      Write: 'ToolWrite',
-      Edit: 'ToolEdit',
-      Glob: 'ToolGlob',
-      Grep: 'ToolGrep',
-      WebSearch: 'ToolWebSearch',
-      WebFetch: 'ToolWebFetch',
-      Agent: 'ToolAgent',
-      StructuredOutput: 'ToolStructuredOutput',
-    }
-    return map[toolName ?? ''] ?? 'ToolDefault'
-  }
-  // PostToolBatch isn't tied to a single tool, but it lives in the Tools
-  // group in the icon UI — map the hookName to the Tool-prefixed id.
-  if (hookName === 'PostToolBatch') return 'ToolBatch'
-  return EVENT_ICON_REGISTRY[hookName] ? hookName : 'Default'
-}
 
 /** Detect payload-level error indicators. Used to bump status to
  *  'failed' so the Errors filter can rely on `event.status` alone. */
@@ -52,20 +33,10 @@ function isPayloadFailed(payload: Record<string, unknown>): boolean {
 
 // Label mapping for the framework's left-side chrome. Keyed by hookName.
 const LABELS: Record<string, string> = {
-  PreToolUse: 'Tool',
-  PostToolUse: 'Tool',
-  PostToolUseFailure: 'Tool',
   PostToolBatch: 'Batch',
-  UserPromptSubmit: 'Prompt',
   UserPromptExpansion: 'PromptExp',
-  Stop: 'Stop',
   StopFailure: 'Stop',
   Setup: 'Setup',
-  SessionStart: 'Session',
-  SessionEnd: 'Session',
-  SubagentStart: 'SubStart',
-  SubagentStop: 'SubStop',
-  PermissionRequest: 'Permission',
   PermissionDenied: 'Permission',
   Notification: 'Notice',
   TaskCreated: 'Task',
@@ -75,8 +46,6 @@ const LABELS: Record<string, string> = {
   ConfigChange: 'Config',
   CwdChanged: 'Config',
   FileChanged: 'File',
-  PreCompact: 'Compact',
-  PostCompact: 'Compact',
   Elicitation: 'MCP',
   ElicitationResult: 'MCP',
   WorktreeCreate: 'Worktree',
@@ -130,13 +99,6 @@ function deriveLocalStatus(hookName: string): ClaudeCodeEnrichedEvent['status'] 
 // row-summary component just renders whatever it finds — no per-hookName
 // switching at render time.
 
-/** Extract the "[binary]" prefix from a summary, if present. */
-function parseBinaryPrefix(summary: string): { binary: string | null; rest: string } {
-  const match = summary.match(/^\[([^\]]+)\]\s*(.*)$/)
-  if (match) return { binary: match[1], rest: match[2] }
-  return { binary: null, rest: summary }
-}
-
 /** Compute the (summaryTool, summaryCmd, summary) tuple for a Claude Code event. */
 function computeSlots(
   hookName: string,
@@ -147,15 +109,7 @@ function computeSlots(
   const isTool =
     hookName === 'PreToolUse' || hookName === 'PostToolUse' || hookName === 'PostToolUseFailure'
 
-  if (isTool && toolName) {
-    const { binary, rest } = parseBinaryPrefix(rawSummary)
-    const displayTool = toolName.startsWith('mcp__') ? 'MCP' : toolName
-    return {
-      summaryTool: displayTool,
-      summaryCmd: toolName.startsWith('mcp__') ? toolName : (binary ?? undefined),
-      summary: rest,
-    }
-  }
+  if (isTool && toolName) return toolSummarySlots(toolName, rawSummary)
 
   if (hookName === 'UserPromptExpansion') {
     const expansionType = (payload as Record<string, unknown>).expansion_type
@@ -214,7 +168,7 @@ export function processEvent(
 
   // Pick the registry icon id; renderers resolve to component + color
   // at render time via resolveEventIcon / resolveEventColor.
-  const iconId = pickIconId(hookName, toolName)
+  const iconId = hookName === 'PostToolBatch' ? 'ToolBatch' : commonIconId(hookName, toolName)
   const dedup = ctx.dedupEnabled
 
   // Turn tracking (only when dedup is on)
@@ -296,74 +250,69 @@ export function processEvent(
     } else if ((hookName === 'PostToolUse' || hookName === 'PostToolUseFailure') && toolUseId) {
       if (!groupId) groupId = toolUseId
 
-      const grouped = ctx.getGroupedEvents(groupId)
-      const preEvent = grouped.find((e) => e.hookName === 'PreToolUse')
-      if (preEvent) {
+      const paired = pairToolCompletion({
+        raw,
+        ctx,
+        groupId,
+        status: hookName === 'PostToolUseFailure' ? 'failed' : 'completed',
+        makePatch: (preEvent) => {
+          displayEventStream = false
+          displayTimeline = false
+          const resultText = extractResultText(p.tool_response)
+          // Re-evaluate filters for the merged-displayed Pre event using a
+          // synthesized raw event that includes the Post's payload (e.g.,
+          // `is_error`, `error`, `tool_response`). Without this, the Errors
+          // default — which matches on payload — never fires for tool
+          // failures because the Pre event's own payload has no error markers
+          // and the Post event is hidden via displayEventStream=false.
+          const mergedRaw: RawEvent = {
+            id: preEvent.id,
+            agentId: preEvent.agentId,
+            hookName: preEvent.hookName,
+            timestamp: preEvent.timestamp,
+            payload: { ...preEvent.payload, ...p },
+          }
+          const refreshedFilters = applyFilters(mergedRaw, preEvent.toolName, ctx.compiledFilters)
+          const patch: Parameters<typeof ctx.updateEvent>[1] = {
+            searchText: preEvent.searchText + ' ' + (resultText?.toLowerCase() ?? ''),
+            filters: refreshedFilters,
+          }
+          // A failure folds onto the Pre row, whose summary was computed before
+          // the error existed. When that summary carries no real information,
+          // surface the error so the row isn't blank. getEventSummary's
+          // PostToolUseFailure path is already error-first.
+          if (hookName === 'PostToolUseFailure' && isWeakSummary(preEvent.summary)) {
+            const failSummary = getEventSummary(mergedRaw, hookName, preEvent.toolName)
+            if (failSummary && !isWeakSummary(failSummary)) {
+              patch.summary = truncateSummary(failSummary, SUMMARY_MAX)
+            }
+          }
+          return patch
+        },
+      })
+      if (paired) {
         displayEventStream = false
         displayTimeline = false
-
-        const newStatus = hookName === 'PostToolUseFailure' ? 'failed' : 'completed'
-        const resultText = extractResultText(p.tool_response)
-        // Re-evaluate filters for the merged-displayed Pre event using a
-        // synthesized raw event that includes the Post's payload (e.g.,
-        // `is_error`, `error`, `tool_response`). Without this, the Errors
-        // default — which matches on payload — never fires for tool
-        // failures because the Pre event's own payload has no error markers
-        // and the Post event is hidden via displayEventStream=false.
-        const mergedRaw: RawEvent = {
-          id: preEvent.id,
-          agentId: preEvent.agentId,
-          hookName: preEvent.hookName,
-          timestamp: preEvent.timestamp,
-          payload: { ...preEvent.payload, ...p },
-        }
-        const refreshedFilters = applyFilters(mergedRaw, preEvent.toolName, ctx.compiledFilters)
-        const patch: Parameters<typeof ctx.updateEvent>[1] = {
-          status: newStatus,
-          searchText: preEvent.searchText + ' ' + (resultText?.toLowerCase() ?? ''),
-          filters: refreshedFilters,
-        }
-        // A failure folds onto the Pre row, whose summary was computed before
-        // the error existed. When that summary carries no real information,
-        // surface the error so the row isn't blank. getEventSummary's
-        // PostToolUseFailure path is already error-first.
-        if (hookName === 'PostToolUseFailure' && isWeakSummary(preEvent.summary)) {
-          const failSummary = getEventSummary(mergedRaw, hookName, preEvent.toolName)
-          if (failSummary && !isWeakSummary(failSummary)) {
-            patch.summary = truncate(failSummary, SUMMARY_MAX)
-          }
-        }
-        ctx.updateEvent(preEvent.id, patch)
       }
     }
 
     // Compact pairing
-    if (hookName === 'PreCompact') {
-      groupId = `compact-${raw.id}`
-      ctx.setPendingGroup(`compact:${raw.agentId}`, groupId)
-    } else if (hookName === 'PostCompact') {
-      const pending = ctx.getPendingGroup(`compact:${raw.agentId}`)
-      if (pending) {
-        groupId = pending
-        ctx.clearPendingGroup(`compact:${raw.agentId}`)
-
-        const grouped = ctx.getGroupedEvents(groupId)
-        const preEvent = grouped.find((e) => e.hookName === 'PreCompact')
-        if (preEvent) {
-          displayEventStream = false
-          displayTimeline = false
-
-          const summaryText =
-            typeof p.compact_summary === 'string' ? p.compact_summary.toLowerCase() : ''
-          ctx.updateEvent(preEvent.id, {
-            status: 'completed',
-            payload: { ...preEvent.payload, ...p },
-            summary: 'Compacted context',
-            searchText: preEvent.searchText + (summaryText ? ' ' + summaryText : ''),
-          })
+    const compact = pairCompactCompletion({
+      raw,
+      ctx,
+      pendingKey: `compact:${raw.agentId}`,
+      complete: (preEvent) => {
+        const summaryText =
+          typeof p.compact_summary === 'string' ? p.compact_summary.toLowerCase() : ''
+        return {
+          payload: { ...preEvent.payload, ...p },
+          summary: 'Compacted context',
+          searchText: preEvent.searchText + (summaryText ? ' ' + summaryText : ''),
         }
-      }
-    }
+      },
+    })
+    if (compact.groupId) groupId = compact.groupId
+    if (compact.hidden) displayEventStream = displayTimeline = false
   }
 
   // Build the enriched event
@@ -387,7 +336,7 @@ export function processEvent(
     turnId,
     displayEventStream: passesAll && displayEventStream,
     displayTimeline: passesAll && displayTimeline,
-    label: LABELS[hookName] || hookName || 'Event',
+    label: LABELS[hookName] || commonLabel(hookName) || hookName || 'Event',
     labelTooltip: hookName,
     iconId,
     dedupMode: dedup,
@@ -410,19 +359,4 @@ export function processEvent(
   }
 
   return { event: enriched }
-}
-
-/** Extract display text from a tool_response for search indexing */
-function extractResultText(toolResponse: any): string | null {
-  if (!toolResponse) return null
-  if (typeof toolResponse === 'string') return toolResponse
-  if (toolResponse.stdout) return toolResponse.stdout
-  if (Array.isArray(toolResponse.content)) {
-    return toolResponse.content
-      .map((r: any) => (r?.type === 'text' && r?.text ? r.text : ''))
-      .filter(Boolean)
-      .join(' ')
-  }
-  if (typeof toolResponse.content === 'string') return toolResponse.content
-  return null
 }

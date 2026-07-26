@@ -63,7 +63,7 @@ export interface ServerAgent {
 export interface Agent extends ServerAgent {
   sessionId: string
   parentAgentId: string | null
-  status: 'active' | 'stopped'
+  status: 'active' | 'waiting' | 'stopped'
   eventCount: number
   firstEventAt: number | null
   lastEventAt: number | null

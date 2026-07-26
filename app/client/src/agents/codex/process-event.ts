@@ -1,6 +1,5 @@
 import { applyFilters } from '@/lib/filters/matcher'
 import { passesAllFilter } from '@/lib/filters/all-filter'
-import { EVENT_ICON_REGISTRY } from '@/lib/event-icon-registry'
 import type { ProcessingContext, RawEvent } from '../types'
 import type { CodexEnrichedEvent } from './types'
 import { deriveToolName } from './derivers'
@@ -12,30 +11,12 @@ import {
   record,
 } from './helpers'
 import { parseTranscriptEvent } from './parse-transcript'
-
-const LABELS: Record<string, string> = {
-  SessionStart: 'Session',
-  UserPromptSubmit: 'Prompt',
-  PreToolUse: 'Tool',
-  PostToolUse: 'Tool',
-  PermissionRequest: 'Permission',
-  PreCompact: 'Compact',
-  PostCompact: 'Compact',
-  SubagentStart: 'Subagent',
-  SubagentStop: 'Subagent',
-  Stop: 'Stop',
-  SessionEnd: 'Session',
-}
-
-function iconId(hookName: string, toolName: string | null): string {
-  if (hookName === 'PreToolUse' || hookName === 'PostToolUse') {
-    if (toolName === 'Bash') return 'ToolBash'
-    if (toolName?.startsWith('mcp__')) return 'ToolMcp'
-    if (toolName === 'spawn_agent' || toolName === 'Agent') return 'ToolAgent'
-    return 'ToolDefault'
-  }
-  return EVENT_ICON_REGISTRY[hookName] ? hookName : 'Default'
-}
+import {
+  commonIconId,
+  commonLabel,
+  pairCompactCompletion,
+  pairToolCompletion,
+} from '../shared/tool-pairing'
 
 export function processEvent(raw: RawEvent, ctx: ProcessingContext): { event: CodexEnrichedEvent } {
   const payload = record(raw.payload)
@@ -71,28 +52,53 @@ export function processEvent(raw: RawEvent, ctx: ProcessingContext): { event: Co
   if (dedup && hookName === 'PreToolUse' && toolUseId) groupId = toolUseId
   if (dedup && hookName === 'PostToolUse' && toolUseId) {
     groupId = toolUseId
-    const preEvent = ctx.getGroupedEvents(groupId).find((event) => event.hookName === 'PreToolUse')
-    if (preEvent) {
+    const paired = pairToolCompletion({
+      raw: { ...raw, hookName },
+      ctx,
+      groupId,
+      status,
+      makePatch: (preEvent) => {
+        displayEventStream = false
+        displayTimeline = false
+        const mergedPayload = { ...preEvent.payload, ...payload }
+        const mergedRaw: RawEvent = {
+          ...raw,
+          id: preEvent.id,
+          agentId: preEvent.agentId,
+          hookName: preEvent.hookName,
+          timestamp: preEvent.timestamp,
+          payload: mergedPayload,
+        }
+        return {
+          payload: mergedPayload,
+          searchText: buildSearchText(mergedRaw, preEvent.summary, preEvent.toolName),
+          filters: applyFilters(mergedRaw, preEvent.toolName, ctx.compiledFilters),
+          resultSummary: getResultSummary(payload),
+        }
+      },
+    })
+    if (paired) {
       displayEventStream = false
       displayTimeline = false
-      const mergedPayload = { ...preEvent.payload, ...payload }
-      const mergedRaw: RawEvent = {
-        ...raw,
-        id: preEvent.id,
-        agentId: preEvent.agentId,
-        hookName: preEvent.hookName,
-        timestamp: preEvent.timestamp,
-        payload: mergedPayload,
-      }
-      ctx.updateEvent(preEvent.id, {
-        status,
-        payload: mergedPayload,
-        searchText: buildSearchText(mergedRaw, preEvent.summary, preEvent.toolName),
-        filters: applyFilters(mergedRaw, preEvent.toolName, ctx.compiledFilters),
-        resultSummary: getResultSummary(payload),
-      })
     }
   }
+
+  const compact = pairCompactCompletion({
+    raw: { ...raw, hookName },
+    ctx,
+    pendingKey: `compact:${raw.agentId}`,
+    complete: (preEvent) => ({
+      payload: { ...preEvent.payload, ...payload },
+      summary: 'Context compacted',
+      searchText: buildSearchText(
+        { ...raw, payload: { ...preEvent.payload, ...payload } },
+        preEvent.summary,
+        preEvent.toolName,
+      ),
+    }),
+  })
+  if (compact.groupId) groupId = compact.groupId
+  if (compact.hidden) displayEventStream = displayTimeline = false
 
   const summary = getEventSummary({ ...raw, hookName }, toolName)
   const passesAll = passesAllFilter(raw, toolName, ctx.compiledFilters)
@@ -106,9 +112,9 @@ export function processEvent(raw: RawEvent, ctx: ProcessingContext): { event: Co
     turnId,
     displayEventStream: passesAll && displayEventStream,
     displayTimeline: passesAll && displayTimeline,
-    label: LABELS[hookName] ?? hookName,
+    label: commonLabel(hookName) ?? hookName,
     labelTooltip: hookName,
-    iconId: iconId(hookName, toolName),
+    iconId: commonIconId(hookName, toolName),
     dedupMode: dedup,
     status,
     filters: applyFilters(raw, toolName, ctx.compiledFilters),

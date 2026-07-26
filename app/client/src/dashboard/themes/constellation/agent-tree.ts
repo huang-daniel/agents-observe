@@ -9,7 +9,7 @@ export interface AgentTreeNode {
   id: string
   name: string | null
   type: string | null
-  status: 'active' | 'stopped'
+  status: 'active' | 'waiting' | 'stopped'
   eventCount: number
   children: AgentTreeNode[]
 }
@@ -18,7 +18,7 @@ export interface PositionedNode {
   id: string
   name: string | null
   type: string | null
-  status: 'active' | 'stopped'
+  status: 'active' | 'waiting' | 'stopped'
   x: number
   y: number
   depth: number
