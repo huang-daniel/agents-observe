@@ -28,6 +28,9 @@ OBSERVE_HEALTH_GRACE=${AGENTS_OBSERVE_HEALTH_GRACE:-30}
 OBSERVE_START_TIMEOUT=${AGENTS_OBSERVE_START_TIMEOUT:-15}
 # Poll interval while waiting for that confirmation, in seconds.
 OBSERVE_START_POLL=${AGENTS_OBSERVE_START_POLL:-0.2}
+# Optional executable used by the supervisor arm instead of the bundled Node
+# entrypoint. Kept here so shell-side supervision configuration has one owner.
+OBSERVE_COLLECTOR_ENTRYPOINT=${AGENTS_OBSERVE_COLLECTOR_ENTRYPOINT:-}
 
 # Stable identity marker expected in the collector's command line. It must NOT
 # be the full command line: argv changes across restarts (ports, flags, node
