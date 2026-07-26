@@ -40,7 +40,7 @@ node scripts/codex-hooks.mjs install --codex-home /path/to/codex-home
 
 ## Events installed
 
-The global installer registers the same event set currently used by the repository-local Codex integration:
+The global installer registers this event set:
 
 - `SessionStart`
 - `SessionEnd`

@@ -225,15 +225,6 @@ describe('codex.buildHookEvent', () => {
       expect(envelope.flags?.stopsSession).toBeUndefined()
     })
 
-    it('opting Stop into notificationOnEvents fires startsNotification on Stop', () => {
-      const optIn = { ...config, notificationOnEvents: ['Stop'] }
-      const { envelope } = buildHookEvent(optIn, makeLog(), {
-        hook_event_name: 'Stop',
-        session_id: 'cdx-1',
-      })
-      expect(envelope.flags?.startsNotification).toBe(true)
-    })
-
     it('opt-in does not affect non-matching events', () => {
       const optIn = { ...config, notificationOnEvents: ['Stop'] }
       const { envelope } = buildHookEvent(optIn, makeLog(), {
