@@ -12,8 +12,9 @@ This document is the contract. The shell primitives that implement it live in
 
 > **Status:** the collector claims the lock, publishes the heartbeat, and reports
 > the health predicate on `/api/health`. The shell supervisor arm can attach,
-> start, restart, and stop that collector. The hook, the CLI, event delivery, and
-> durable spool are unchanged.
+> start, restart, and stop that collector. The durable spool and its consumer
+> exist and are exercised by tests, but nothing writes to it yet: the hook, the
+> CLI, and event delivery still go straight over HTTP, unchanged.
 
 ## Two implementations, one contract
 
