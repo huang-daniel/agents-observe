@@ -19,6 +19,11 @@ This document is the contract. The shell primitives that implement it live in
 > (`hooks/scripts/lib/agents/`) the old per-hook `observe_cli.mjs` path used,
 > then commits to SQLite directly — no HTTP round trip. That CLI `hook` command
 > still exists as a last-resort fallback for the rare spool-write failure.
+> Known limitation: the `getSessionInfo` request/response that backfills a
+> session's slug (see [README.md](../README.md#architecture)) only fires on
+> that legacy fallback path — the spool consumer's `commit()` has no HTTP
+> round trip to carry a request back to the hook, so a session that spools
+> successfully keeps whatever slug (if any) it already had.
 
 ## Two implementations, one contract
 
