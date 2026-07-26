@@ -1,14 +1,19 @@
 import { describe, expect, test } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 import { compileFilters } from '@/lib/filters/compile'
 import type { ProcessingContext } from '../types'
 import { processEvent } from './process-event'
 import { processEvent as processClaudeEvent } from '../claude-code/process-event'
 
+const fixturesDir = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../../../../test/fixtures/codex',
+)
+
 function fixture(name: string): Record<string, unknown> {
-  return JSON.parse(
-    readFileSync(new URL(`../../../../../test/fixtures/codex/${name}.json`, import.meta.url), 'utf8'),
-  )
+  return JSON.parse(readFileSync(path.join(fixturesDir, `${name}.json`), 'utf8'))
 }
 
 function rawFixture(id: number, name: string) {
@@ -73,11 +78,19 @@ describe('Codex processEvent', () => {
         agentId: 'claude-session-1',
         hookName: 'PreToolUse',
         timestamp: 1,
-        payload: { tool_name: 'Bash', tool_use_id: 'toolu-claude-1', tool_input: { command: 'git status --short' } },
+        payload: {
+          tool_name: 'Bash',
+          tool_use_id: 'toolu-claude-1',
+          tool_input: { command: 'git status --short' },
+        },
       },
       context(),
     ).event
-    expect(codexPre).toMatchObject({ label: claudePre.label, iconId: claudePre.iconId, status: 'running' })
+    expect(codexPre).toMatchObject({
+      label: claudePre.label,
+      iconId: claudePre.iconId,
+      status: 'running',
+    })
     expect(codexPre.groupId).toBeTruthy()
 
     const codexStop = processEvent(rawFixture(2, 'stop'), context()).event
@@ -106,7 +119,13 @@ describe('Codex processEvent', () => {
     for (const [fixtureName, claudeHook, claudePayload, status] of equivalents) {
       const codex = processEvent(rawFixture(10, fixtureName), context()).event
       const claude = processClaudeEvent(
-        { id: 10, agentId: 'claude-session-1', hookName: claudeHook, timestamp: 10, payload: claudePayload },
+        {
+          id: 10,
+          agentId: 'claude-session-1',
+          hookName: claudeHook,
+          timestamp: 10,
+          payload: claudePayload,
+        },
         context(),
       ).event
       expect(codex).toMatchObject({

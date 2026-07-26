@@ -291,7 +291,7 @@ Run `just db-reset` to delete the SQLite database and start fresh (stops the ser
 
 ## ROADMAP
 
-- [ ] Add support for Codex
+- [x] Add support for Codex
 - [ ] Add support for OpenClaw
 - [ ] Add support for pi-code agents
 
