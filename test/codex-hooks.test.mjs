@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -25,6 +25,22 @@ async function tempCodexHome() {
 }
 
 describe('Codex global hook installation', () => {
+  it('installs the complete Codex lifecycle event set', () => {
+    expect(AGENTS_OBSERVE_CODEX_EVENTS).toEqual([
+      'SessionStart',
+      'SessionEnd',
+      'UserPromptSubmit',
+      'PreToolUse',
+      'PostToolUse',
+      'PermissionRequest',
+      'PreCompact',
+      'PostCompact',
+      'SubagentStart',
+      'SubagentStop',
+      'Stop',
+    ])
+  })
+
   it('preserves unrelated hooks and is idempotent', () => {
     const original = {
       description: 'user hooks',
@@ -105,7 +121,9 @@ describe('Codex global hook installation', () => {
     const hooksPath = join(codexHome, 'hooks.json')
     await writeFile(
       hooksPath,
-      JSON.stringify({ hooks: { SessionEnd: [{ hooks: [{ type: 'command', command: 'echo bye' }] }] } }),
+      JSON.stringify({
+        hooks: { SessionEnd: [{ hooks: [{ type: 'command', command: 'echo bye' }] }] },
+      }),
     )
 
     const installed = await installCodexHooks({
@@ -125,6 +143,18 @@ describe('Codex global hook installation', () => {
 
     const finalDocument = JSON.parse(await readFile(hooksPath, 'utf8'))
     expect(finalDocument.hooks.SessionEnd[0].hooks[0].command).toBe('echo bye')
+  })
+
+  it('does not rewrite an unchanged hooks file on a repeat install', async () => {
+    const codexHome = await tempCodexHome()
+    const hookScriptPath = '/opt/agents-observe/hooks/scripts/hook.sh'
+    await installCodexHooks({ codexHome, hookScriptPath })
+    const hooksPath = join(codexHome, 'hooks.json')
+    const firstStat = await stat(hooksPath)
+
+    await installCodexHooks({ codexHome, hookScriptPath })
+
+    expect((await stat(hooksPath)).ino).toBe(firstStat.ino)
   })
 
   it('refuses to overwrite malformed JSON', async () => {

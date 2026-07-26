@@ -6,9 +6,15 @@ export const AGENTS_OBSERVE_HOOK_MARKER = 'AGENTS_OBSERVE_HOOK_SOURCE=global'
 
 export const AGENTS_OBSERVE_CODEX_EVENTS = [
   'SessionStart',
+  'SessionEnd',
   'UserPromptSubmit',
   'PreToolUse',
   'PostToolUse',
+  'PermissionRequest',
+  'PreCompact',
+  'PostCompact',
+  'SubagentStart',
+  'SubagentStop',
   'Stop',
 ]
 
@@ -155,7 +161,9 @@ export async function installCodexHooks({ codexHome = null, hookScriptPath } = {
   const hooksPath = resolveCodexHooksPath(codexHome)
   const current = await readCodexHooks(hooksPath)
   const next = mergeAgentsObserveHooks(current, hookScriptPath)
-  await writeJsonAtomic(hooksPath, next)
+  if (JSON.stringify(current) !== JSON.stringify(next)) {
+    await writeJsonAtomic(hooksPath, next)
+  }
   return { hooksPath, ...getAgentsObserveHookStatus(next) }
 }
 
