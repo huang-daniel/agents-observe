@@ -45,7 +45,8 @@ start() {
     printf 'collector: start in progress timed out waiting for start lock\n' >&2
     return 1
   fi
-  trap 'observe_lifecycle_release_start_lock' EXIT HUP INT TERM
+  trap 'observe_lifecycle_release_start_lock' EXIT
+  trap 'observe_lifecycle_release_start_lock; exit 1' HUP INT TERM
 
   # A peer may have completed while this invocation waited for its start lock.
   if observe_collector_healthy; then
