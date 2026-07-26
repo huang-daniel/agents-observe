@@ -49,6 +49,9 @@ export interface EnrichedEvent {
   /** One-line summary text shown in the row. Universal across agent classes. */
   summary: string
 
+  /** Optional compact output folded from a paired completion event. */
+  resultSummary?: string
+
   // Original payload (same reference, no copy)
   payload: Record<string, unknown>
 }
