@@ -12,8 +12,9 @@ This document is the contract. The shell primitives that implement it live in
 
 > **Status:** the collector claims the lock, publishes the heartbeat, and reports
 > the health predicate on `/api/health`. The shell supervisor arm can attach,
-> start, restart, and stop that collector. The hook, the CLI, event delivery, and
-> durable spool are unchanged.
+> start, restart, and stop that collector. The durable spool and its consumer
+> exist and are exercised by tests, but nothing writes to it yet: the hook, the
+> CLI, and event delivery still go straight over HTTP, unchanged.
 
 ## Two implementations, one contract
 
@@ -64,6 +65,10 @@ $AGENTS_OBSERVE_DATA_ROOT/runtime/
   collector-start.lock/      held only across a start attempt
   collector.heartbeat        one key=value per line — see below
   collector-lifecycle.log    append-only diagnostic ledger
+  spool/                     durable event queue
+    pending/                 accepted entries awaiting a SQLite commit
+    processing/              entry currently being committed; recovered on restart
+    failed/                  entries that exhausted commit retries
 ```
 
 `AGENTS_OBSERVE_DATA_ROOT` falls back to `AGENTS_OBSERVE_LOCAL_DATA_ROOT` (the data
@@ -229,8 +234,10 @@ It is deliberately **not** JSON: the shell reader that ships with the kernel is
 line-oriented, and a JSON file would be unreadable to `observe-health.sh`. The
 field set is the one the supervision plan specifies, and `/api/health` renders
 exactly these fields as JSON — which is where a JSON shape belongs.
-`lastCommittedEventId` and `spoolPending` are reserved keys, empty until the spool
-exists, so readers do not have to cope with the field set changing later.
+`lastCommittedEventId` is the stable id of the most recently SQLite-committed
+spool entry (empty until the first commit). `spoolPending` is the current count
+of entries awaiting commit, including an entry in `processing`. Failed entries
+are retained under `spool/failed` and do not contribute to that count.
 
 ## Health predicate
 
@@ -272,7 +279,7 @@ running:
     "databaseHealthy": true,
     "httpHealthy": true,
     "lastCommittedEventId": null,
-    "spoolPending": null,
+    "spoolPending": 0,
     "status": "healthy",
     "reason": null,
     "heartbeatAgeSeconds": 0

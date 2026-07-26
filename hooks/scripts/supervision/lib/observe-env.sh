@@ -126,6 +126,7 @@ observe_env_init() { # [data-root]
   OBSERVE_START_LOCK="$OBSERVE_RUNTIME/collector-start.lock"
   OBSERVE_HEARTBEAT="$OBSERVE_RUNTIME/collector.heartbeat"
   OBSERVE_LIFECYCLE_LOG="$OBSERVE_RUNTIME/collector-lifecycle.log"
+  OBSERVE_SPOOL="$OBSERVE_RUNTIME/spool"
   return 0
 }
 

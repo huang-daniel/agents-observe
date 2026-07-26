@@ -20,6 +20,7 @@ import {
 } from './supervision/collector'
 import type { CollectorSupervision } from './supervision/collector'
 import { DataRootError } from './supervision/paths'
+import { createSpoolConsumer } from './supervision/spool-consumer'
 
 const PORT = config.port
 
@@ -73,6 +74,12 @@ function claimDataRootOrExit(): CollectorSupervision {
 
 const supervision = claimDataRootOrExit()
 const store = createStore()
+const spoolConsumer = createSpoolConsumer({
+  dataRoot: supervision.paths.dataRoot,
+  store,
+  onStats: (stats) => supervision.setSpoolStats(stats),
+})
+spoolConsumer.start()
 // Only now can the heartbeat answer what it reports on.
 supervision.startHeartbeat()
 
@@ -97,6 +104,7 @@ function shutdown(reason: string): void {
   console.log(`[shutdown] ${reason} — stopping collector`)
 
   supervision.stopHeartbeat()
+  spoolConsumer.stop()
   httpListening = false
   closeWebSocket()
   httpServer?.close()

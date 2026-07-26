@@ -40,9 +40,9 @@ export interface HeartbeatRecord {
   updatedAt: number
   databaseHealthy: boolean
   httpHealthy: boolean
-  /** Wired in when the spool lands; `null` until then. */
-  lastCommittedEventId: number | null
-  /** Wired in when the spool lands; `null` until then. */
+  /** Most recently committed durable spool event, or null before the first. */
+  lastCommittedEventId: string | null
+  /** Pending + processing durable spool entries. */
   spoolPending: number | null
 }
 

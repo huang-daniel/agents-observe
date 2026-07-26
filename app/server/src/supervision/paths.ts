@@ -21,6 +21,7 @@ export interface RuntimePaths {
   startLockDir: string
   heartbeatFile: string
   lifecycleLog: string
+  spoolDir: string
 }
 
 /** Thrown when no safe data root can be resolved. Maps to exit code 2. */
@@ -76,6 +77,7 @@ export function runtimePaths(dataRoot: string): RuntimePaths {
     startLockDir: `${runtimeDir}/collector-start.lock`,
     heartbeatFile: `${runtimeDir}/collector.heartbeat`,
     lifecycleLog: `${runtimeDir}/collector-lifecycle.log`,
+    spoolDir: `${runtimeDir}/spool`,
   }
 }
 

@@ -77,7 +77,7 @@ export interface CollectorStatus {
   updatedAt: number | null
   databaseHealthy: boolean
   httpHealthy: boolean
-  lastCommittedEventId: number | null
+  lastCommittedEventId: string | null
   spoolPending: number | null
   status: CollectorHealthStatus
   reason: string | null
@@ -95,6 +95,8 @@ export interface CollectorSupervision {
   publish(): Promise<boolean>
   startHeartbeat(): void
   stopHeartbeat(): void
+  /** Update the durable spool values published in heartbeat and /api/health. */
+  setSpoolStats(stats: { lastCommittedEventId: string | null; spoolPending: number }): void
   /** Release heartbeat + lock, but only if this instance still owns them. */
   release(): boolean
   status(): CollectorStatus
@@ -132,6 +134,7 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
   let released = false
   let updatedAt: number | null = null
   let lastProbe: CollectorProbe = { databaseHealthy: false, httpHealthy: false }
+  let spoolStats = { lastCommittedEventId: null as string | null, spoolPending: 0 }
 
   if (options.setProcessTitle && marker) {
     // Gives the live process a stable, greppable identity. It is deliberately
@@ -176,10 +179,8 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
       updatedAt: at,
       databaseHealthy: sampled.databaseHealthy,
       httpHealthy: sampled.httpHealthy,
-      // Filled in when the spool lands; the keys are reserved now so readers
-      // do not have to cope with the field set changing later.
-      lastCommittedEventId: null,
-      spoolPending: null,
+      lastCommittedEventId: spoolStats.lastCommittedEventId,
+      spoolPending: spoolStats.spoolPending,
     })
     if (ok) updatedAt = at
     return ok
@@ -214,6 +215,13 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
     timer = null
   }
 
+  function setSpoolStats(stats: {
+    lastCommittedEventId: string | null
+    spoolPending: number
+  }): void {
+    spoolStats = stats
+  }
+
   function release(): boolean {
     stopHeartbeat()
     if (released) return false
@@ -245,8 +253,8 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
       updatedAt,
       databaseHealthy: lastProbe.databaseHealthy,
       httpHealthy: lastProbe.httpHealthy,
-      lastCommittedEventId: null,
-      spoolPending: null,
+      lastCommittedEventId: spoolStats.lastCommittedEventId,
+      spoolPending: spoolStats.spoolPending,
       status: health.status,
       reason: health.reason,
       heartbeatAgeSeconds: health.heartbeatAgeSeconds,
@@ -262,6 +270,7 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
     publish,
     startHeartbeat,
     stopHeartbeat,
+    setSpoolStats,
     release,
     status,
   }

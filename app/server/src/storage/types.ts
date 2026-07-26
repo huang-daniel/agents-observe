@@ -9,6 +9,14 @@ export class DuplicateEventSignatureError extends Error {
   }
 }
 
+/** The durable spool replay key already exists in the events table. */
+export class DuplicateSpoolEventIdError extends Error {
+  constructor(public readonly spoolEventId: string) {
+    super(`Duplicate spool event id: ${spoolEventId}`)
+    this.name = 'DuplicateSpoolEventIdError'
+  }
+}
+
 export interface InsertEventParams {
   agentId: string
   sessionId: string
@@ -22,6 +30,8 @@ export interface InsertEventParams {
   _meta?: Record<string, unknown> | null
   /** Stable signature for dedup. When set, a UNIQUE constraint is enforced. */
   signatureHash?: string | null
+  /** Stable id allocated before durable spool write. UNIQUE when present. */
+  spoolEventId?: string | null
 }
 
 export interface InsertEventResult {
