@@ -39,8 +39,13 @@ shell/TypeScript pairs.
 
 Read by the API server in `app/server/src/config.ts`. When you start
 the server via the CLI (the normal path), these are populated
-automatically from the CLI config. Override them only when running the
-server directly.
+automatically from the CLI config via `getServerEnv()`. When a hook
+auto-arms a local collector directly — bypassing the CLI —
+`hooks/scripts/supervision/observe-lifecycle.sh`'s `observe_spawn_collector`
+computes the local-mode defaults (`AGENTS_OBSERVE_DB_PATH`,
+`AGENTS_OBSERVE_CLIENT_DIST_PATH`, `AGENTS_OBSERVE_BIND_HOST`) in shell so
+hook-spawned collectors match. Override them only when running the server
+directly.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
