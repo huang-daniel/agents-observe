@@ -30,6 +30,10 @@ const PHASE_COLLECTOR = join(
   SUPERVISION_DIR,
   '../../../test/hooks/scripts/supervision/fixtures/phase-collector.sh',
 )
+const CAPTURE_ENV_COLLECTOR = join(
+  SUPERVISION_DIR,
+  '../../../test/hooks/scripts/supervision/fixtures/capture-env-collector.sh',
+)
 
 const roots = []
 
@@ -44,14 +48,11 @@ async function freePort() {
   })
 }
 
-async function command(script, args, root, port, overrides = {}) {
+async function command(script, args, root, port, overrides = {}, includeServerEnvDefaults = true) {
   const env = {
     ...process.env,
     AGENTS_OBSERVE_DATA_ROOT: root,
-    AGENTS_OBSERVE_DB_PATH: `${root}/observe.db`,
     AGENTS_OBSERVE_SERVER_PORT: String(port),
-    AGENTS_OBSERVE_BIND_HOST: '127.0.0.1',
-    AGENTS_OBSERVE_CLIENT_DIST_PATH: '',
     AGENTS_OBSERVE_SHUTDOWN_DELAY_MS: '0',
     AGENTS_OBSERVE_HEARTBEAT_INTERVAL_MS: '100',
     AGENTS_OBSERVE_HEALTH_URL: `http://127.0.0.1:${port}/api/health`,
@@ -59,7 +60,19 @@ async function command(script, args, root, port, overrides = {}) {
     AGENTS_OBSERVE_START_POLL: '0.05',
     AGENTS_OBSERVE_LOG_LEVEL: 'error',
     AGENTS_OBSERVE_COLLECTOR_ENTRYPOINT: FAKE_COLLECTOR,
+    ...(includeServerEnvDefaults
+      ? {
+          AGENTS_OBSERVE_DB_PATH: `${root}/observe.db`,
+          AGENTS_OBSERVE_BIND_HOST: '127.0.0.1',
+          AGENTS_OBSERVE_CLIENT_DIST_PATH: '',
+        }
+      : {}),
     ...overrides,
+  }
+  if (!includeServerEnvDefaults) {
+    delete env.AGENTS_OBSERVE_DB_PATH
+    delete env.AGENTS_OBSERVE_BIND_HOST
+    delete env.AGENTS_OBSERVE_CLIENT_DIST_PATH
   }
   try {
     const { stdout, stderr } = await execFileAsync(script, args, { env })
@@ -103,6 +116,35 @@ describe('observe-arm.sh', () => {
     expect(second.code, second.stderr).toBe(0)
     expect(second.stdout).toMatch(/^collector: attached pid=\d+ instance=/)
     expect(second.stdout.match(/pid=(\d+)/)[1]).toBe(first.stdout.match(/pid=(\d+)/)[1])
+  }, 30_000)
+
+  it('computes local collector server defaults when the arm receives only a data root', async () => {
+    const { root, entry } = fixture()
+    entry.port = await freePort()
+    const capturePath = `${root}/collector-env`
+
+    const result = await command(
+      ARM,
+      ['start'],
+      root,
+      entry.port,
+      {
+        AGENTS_OBSERVE_COLLECTOR_ENTRYPOINT: CAPTURE_ENV_COLLECTOR,
+        AGENTS_OBSERVE_CAPTURE_ENV_PATH: capturePath,
+      },
+      false,
+    )
+
+    expect(result.code, result.stderr).toBe(0)
+    expect(readFileSync(capturePath, 'utf8')).toBe(
+      [
+        `AGENTS_OBSERVE_LOCAL_DATA_ROOT=${root}`,
+        `AGENTS_OBSERVE_DB_PATH=${root}/data/observe.db`,
+        `AGENTS_OBSERVE_CLIENT_DIST_PATH=${join(process.cwd(), 'app/client/dist')}`,
+        'AGENTS_OBSERVE_BIND_HOST=127.0.0.1',
+        '',
+      ].join('\n'),
+    )
   }, 30_000)
 
   it('serializes concurrent starts through the start lock', async () => {
