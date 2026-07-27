@@ -1,8 +1,14 @@
 // test/config.test.mjs
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { execFile } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../')
 
 // Snapshot and restore all env vars we touch
 const envKeys = [
@@ -22,11 +28,12 @@ const envKeys = [
   'AGENTS_OBSERVE_RUNTIME',
   'AGENTS_OBSERVE_DEV_CLIENT_PORT',
   'AGENTS_OBSERVE_ALLOW_LOCAL_CALLBACKS',
-  'AGENTS_OBSERVE_HOOK_STARTUP_TIMEOUT',
   'AGENTS_OBSERVE_NOTIFICATION_ON_EVENTS',
   'AGENTS_OBSERVE_BIND',
   'AGENTS_OBSERVE_CORS_ORIGINS',
   'AGENTS_OBSERVE_SELINUX_RELABEL',
+  'AGENTS_OBSERVE_DATA_ROOT',
+  'AGENTS_OBSERVE_INSTANCE_ID',
 ]
 
 let savedEnv
@@ -393,26 +400,6 @@ describe('config', () => {
     expect(cfg.hasCustomApiUrl).toBe(true)
   })
 
-  // --- hookStartupTimeout ---
-
-  it('defaults hookStartupTimeout to 30000', async () => {
-    const cfg = await loadConfig()
-    expect(cfg.hookStartupTimeout).toBe(30000)
-  })
-
-  it('reads AGENTS_OBSERVE_HOOK_STARTUP_TIMEOUT', async () => {
-    process.env.AGENTS_OBSERVE_HOOK_STARTUP_TIMEOUT = '10000'
-    const cfg = await loadConfig()
-    expect(cfg.hookStartupTimeout).toBe(10000)
-  })
-
-  it('parses hookStartupTimeout as integer', async () => {
-    process.env.AGENTS_OBSERVE_HOOK_STARTUP_TIMEOUT = '5000'
-    const cfg = await loadConfig()
-    expect(cfg.hookStartupTimeout).toBe(5000)
-    expect(Number.isInteger(cfg.hookStartupTimeout)).toBe(true)
-  })
-
   // --- Callbacks ---
 
   it('defaults allowedCallbacks to all handlers', async () => {
@@ -651,5 +638,67 @@ describe('getServerEnv — transcript-stats env vars', () => {
       delete process.env.AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_HOST_BASE
       delete process.env.AGENTS_OBSERVE_TRANSCRIPT_CODEX_HOST_BASE
     }
+  })
+})
+
+// The supervision data root is resolved twice — here and in
+// hooks/scripts/supervision/lib/observe-env.sh — because the shell hooks and
+// the Node CLI both have to find the same lock, heartbeat and spool. These
+// assert against the shell's own answer rather than against a restatement of
+// its rules, so the two cannot drift apart quietly.
+describe('supervision data root', () => {
+  const shellDataRoot = async (env) => {
+    const lib = join(REPO_ROOT, 'hooks/scripts/supervision/lib/observe-env.sh')
+    const { stdout } = await execFileAsync(
+      'bash',
+      [
+        '-c',
+        `set -u
+. '${lib}'
+observe_env_init || exit 2
+printf '%s\\n' "$OBSERVE_DATA_ROOT"`,
+      ],
+      { env: { ...process.env, ...env } },
+    )
+    return stdout.trim()
+  }
+
+  it('agrees with the shell when AGENTS_OBSERVE_DATA_ROOT is set', async () => {
+    process.env.AGENTS_OBSERVE_DATA_ROOT = '/tmp/observe-root-explicit'
+    const { getConfig } = await import('../../../../hooks/scripts/lib/config.mjs')
+    expect(getConfig().supervisionDataRoot).toBe(
+      await shellDataRoot({ AGENTS_OBSERVE_DATA_ROOT: '/tmp/observe-root-explicit' }),
+    )
+  })
+
+  it('agrees with the shell when only the data-dir override is set', async () => {
+    process.env.AGENTS_OBSERVE_LOCAL_DATA_ROOT = tmpHome
+    const { getConfig } = await import('../../../../hooks/scripts/lib/config.mjs')
+    expect(getConfig().supervisionDataRoot).toBe(
+      await shellDataRoot({
+        AGENTS_OBSERVE_DATA_ROOT: '',
+        AGENTS_OBSERVE_LOCAL_DATA_ROOT: tmpHome,
+      }),
+    )
+  })
+
+  it('agrees with the shell on the bare ~/.agents-observe fallback', async () => {
+    const { getConfig } = await import('../../../../hooks/scripts/lib/config.mjs')
+    expect(getConfig().supervisionDataRoot).toBe(join(tmpHome, '.agents-observe'))
+    expect(getConfig().supervisionDataRoot).toBe(
+      await shellDataRoot({
+        AGENTS_OBSERVE_DATA_ROOT: '',
+        AGENTS_OBSERVE_LOCAL_DATA_ROOT: '',
+        HOME: tmpHome,
+      }),
+    )
+  })
+
+  it('does not follow CLAUDE_PLUGIN_DATA, which the shell cannot see', async () => {
+    // The DB may live under the plugin data dir; supervision state deliberately
+    // does not, because observe-env.sh knows nothing about that variable.
+    process.env.CLAUDE_PLUGIN_DATA = join(tmpHome, '.claude/plugins/data/agents-observe-inline')
+    const { getConfig } = await import('../../../../hooks/scripts/lib/config.mjs')
+    expect(getConfig().supervisionDataRoot).toBe(join(tmpHome, '.agents-observe'))
   })
 })

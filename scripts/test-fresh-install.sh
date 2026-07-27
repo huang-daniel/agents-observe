@@ -202,7 +202,7 @@ if ! $SKIP_UI_CHECK; then
     echo "  claude --version"
     echo "  ls -la /home/testuser/.claude"
     echo "  find /home/testuser/.claude -type f | head"
-    echo "  su testuser -c 'claude --plugin-dir /plugin --mcp-config /plugin/.mcp.json -p \"/hooks\"'"
+    echo "  su testuser -c 'claude --plugin-dir /plugin -p \"/hooks\"'"
     echo ""
     read -r -p "Press Enter to clean up and exit... " _
   fi

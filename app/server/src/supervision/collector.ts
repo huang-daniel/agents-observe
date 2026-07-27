@@ -14,14 +14,21 @@ import { HEARTBEAT_SCHEMA_VERSION, publishHeartbeat, removeHeartbeatIfOwner } fr
 import { collectorHealth } from './health'
 import type { CollectorHealthStatus } from './health'
 import {
+  LOCK_FILES,
   lockIsAbandoned,
   lockOwnedBy,
   releaseLockIfPidOwner,
   removeLock,
   tryClaimLock,
 } from './lock'
-import type { LockOptions } from './lock'
-import { ensureRuntimeDir, nowEpoch, resolveDataRoot, runtimePaths } from './paths'
+import type { CollectorRuntime, LockOptions } from './lock'
+import {
+  alignOwnerWithDataRoot,
+  ensureRuntimeDir,
+  nowEpoch,
+  resolveDataRoot,
+  runtimePaths,
+} from './paths'
 import type { RuntimePaths } from './paths'
 import { pidHasMarker } from './process-identity'
 
@@ -60,6 +67,10 @@ export interface SupervisionOptions {
   graceSeconds?: number
   settleSeconds?: number
   procRoot?: string
+  /** Which runtime this collector is supervised as. Defaults to the config. */
+  runtime?: CollectorRuntime
+  /** This collector's container name, when it runs as the managed container. */
+  containerName?: string
   /** Sampled on every heartbeat tick. Defaults to "everything is fine". */
   probe?: () => Promise<CollectorProbe> | CollectorProbe
   /** Set the OS process title to the entrypoint marker. Off in tests. */
@@ -103,9 +114,19 @@ export interface CollectorSupervision {
 }
 
 function lockOptions(
-  opts: Required<Pick<SupervisionOptions, 'procRoot' | 'settleSeconds'>>,
+  opts: Required<Pick<SupervisionOptions, 'procRoot' | 'settleSeconds'>> & {
+    runtime: CollectorRuntime
+    containerName: string
+    instanceId: string
+  },
 ): LockOptions {
-  return { procRoot: opts.procRoot, settleSeconds: opts.settleSeconds }
+  return {
+    procRoot: opts.procRoot,
+    settleSeconds: opts.settleSeconds,
+    runtime: opts.runtime,
+    containerName: opts.containerName,
+    instanceId: opts.instanceId,
+  }
 }
 
 export function createCollectorSupervision(options: SupervisionOptions = {}): CollectorSupervision {
@@ -126,7 +147,9 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
     config.supervision.homeDir ? `${config.supervision.homeDir}/.agents-observe` : undefined,
   ])
   const paths = runtimePaths(dataRoot)
-  const locking = lockOptions({ procRoot, settleSeconds })
+  const runtime = options.runtime ?? config.supervision.collectorRuntime
+  const containerName = options.containerName ?? config.supervision.containerName
+  const locking = lockOptions({ procRoot, settleSeconds, runtime, containerName, instanceId })
   const startedAt = nowEpoch()
 
   let timer: ReturnType<typeof setInterval> | null = null
@@ -151,9 +174,17 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
     // check report `entrypoint-mismatch` forever. An empty entrypoint is the
     // shell kernel's documented "skip this leg" value.
     const entrypoint = marker && pidHasMarker(pid, marker, locking) ? marker : ''
-    const spec = { lockDir: paths.lockDir, instanceId, entrypoint, dataRoot, pid }
+    const spec = {
+      lockDir: paths.lockDir,
+      instanceId,
+      entrypoint,
+      dataRoot,
+      pid,
+      runtime,
+      container: containerName,
+    }
 
-    if (tryClaimLock(spec, locking)) return
+    if (tryClaimLock(spec, locking)) return alignOwnership()
 
     // The only lock we may take away is one whose owner is provably gone.
     // Age is never evidence — that decision belongs entirely to
@@ -161,10 +192,23 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
     if (lockIsAbandoned(paths.lockDir, locking)) {
       log(`[supervision] Reclaiming abandoned collector lock at ${paths.lockDir}`)
       removeLock(paths.lockDir)
-      if (tryClaimLock(spec, locking)) return
+      if (tryClaimLock(spec, locking)) return alignOwnership()
     }
 
     throw new CollectorLockHeldError(paths.lockDir)
+  }
+
+  /**
+   * Keep supervision state owned by whoever owns the data root.
+   *
+   * The managed container runs as root while the hooks that share this data
+   * root run as the user. Without this, the lock the container writes is a
+   * root-owned directory inside a user-owned tree, and the host supervisor can
+   * never reclaim it once the container is gone — `rmdir` needs write access to
+   * the lock directory itself. A no-op wherever the two already agree.
+   */
+  function alignOwnership(): void {
+    alignOwnerWithDataRoot(paths.lockDir, dataRoot, LOCK_FILES)
   }
 
   async function publish(): Promise<boolean> {
@@ -182,7 +226,10 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
       lastCommittedEventId: spoolStats.lastCommittedEventId,
       spoolPending: spoolStats.spoolPending,
     })
-    if (ok) updatedAt = at
+    if (ok) {
+      updatedAt = at
+      alignOwnerWithDataRoot(paths.heartbeatFile, dataRoot)
+    }
     return ok
   }
 

@@ -14,7 +14,7 @@ Thanks for your interest in contributing!
 
 ## Project layout
 
-- `hooks/scripts/` — Hook script and MCP server script
+- `hooks/scripts/` — Hook entrypoint, CLI, and collector supervision scripts
 - `hooks/hooks.json` — Plugin hook definitions
 - `skills/` — Plugin skills (`/observe`, `/observe stop`, `/observe status`)
 - `.claude-plugin/` — Plugin manifest

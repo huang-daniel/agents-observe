@@ -44,7 +44,17 @@ export const LOCK_FILES = [
   'data-root',
   'instance-id',
   'started-at',
+  'runtime',
+  'container',
 ] as const
+
+/**
+ * Which kind of thing a lock's owner is. `local` is a process on this host,
+ * identified by PID identity; `docker` is the managed container, identified by
+ * its name plus the instance id it was labelled with. Locks written before the
+ * docker runtime existed have no `runtime` file and were always processes.
+ */
+export type CollectorRuntime = 'local' | 'docker'
 
 export interface LockSnapshot {
   pid: string
@@ -54,6 +64,8 @@ export interface LockSnapshot {
   dataRoot: string
   instanceId: string
   startedAt: string
+  runtime: CollectorRuntime
+  container: string
 }
 
 export interface ClaimSpec {
@@ -62,6 +74,8 @@ export interface ClaimSpec {
   entrypoint: string
   dataRoot: string
   pid: number
+  runtime?: CollectorRuntime
+  container?: string
 }
 
 export interface LockOptions extends IdentityOptions {
@@ -71,6 +85,12 @@ export interface LockOptions extends IdentityOptions {
    * abandoned, so a competing acquirer cannot delete a lock mid-claim.
    */
   settleSeconds: number
+  /** The runtime the *caller* runs in. Defaults to `local`. */
+  runtime?: CollectorRuntime
+  /** The caller's container name, when it runs in one. */
+  containerName?: string
+  /** The caller's instance id — one collector *run*, not one container. */
+  instanceId?: string
 }
 
 /** Read the lock directory, or `null` when there is no lock at all. */
@@ -84,6 +104,8 @@ export function readLock(lockDir: string): LockSnapshot | null {
     dataRoot: readLine(`${lockDir}/data-root`),
     instanceId: readLine(`${lockDir}/instance-id`),
     startedAt: readLine(`${lockDir}/started-at`),
+    runtime: readLine(`${lockDir}/runtime`) === 'docker' ? 'docker' : 'local',
+    container: readLine(`${lockDir}/container`),
   }
 }
 
@@ -116,6 +138,8 @@ function writeDetails(spec: ClaimSpec, opts: LockOptions): boolean {
     writeFileSync(`${spec.lockDir}/entrypoint`, `${spec.entrypoint}\n`)
     writeFileSync(`${spec.lockDir}/data-root`, `${spec.dataRoot}\n`)
     writeFileSync(`${spec.lockDir}/instance-id`, `${spec.instanceId}\n`)
+    writeFileSync(`${spec.lockDir}/runtime`, `${spec.runtime ?? 'local'}\n`)
+    writeFileSync(`${spec.lockDir}/container`, `${spec.container ?? ''}\n`)
     writeFileSync(`${spec.lockDir}/started-at`, `${nowEpoch()}\n`)
     // Written last: the shell treats a lock with a PID but no identity as
     // "still being claimed", so identity is what completes the record.
@@ -206,10 +230,34 @@ export function processMatchesLock(lockDir: string, opts: LockOptions): boolean 
   return true
 }
 
-/** True when a lock directory exists but its recorded owner is provably gone. */
+/**
+ * True when a lock directory exists but its recorded owner is provably gone.
+ *
+ * **Abandonment is only ever judged within one runtime.** A collector can only
+ * apply the proof its own runtime gives it: a host process reads `/proc` for
+ * PID identity, and a container can see neither the host's processes nor the
+ * docker daemon. Judging across that boundary would mean calling an owner dead
+ * because we cannot see it — which is how a data root ends up with two
+ * collectors. A cross-runtime lock is therefore never abandoned here; the host
+ * supervisor (`observe_lock_is_abandoned`), which can ask docker, resolves it.
+ *
+ * Within the docker runtime the proof is the container name: docker allows at
+ * most one live container per name, so a collector running *as* that container
+ * knows any earlier instance recorded under it has ended.
+ */
 export function lockIsAbandoned(lockDir: string, opts: LockOptions): boolean {
   const lock = readLock(lockDir)
   if (!lock) return false
+
+  const callerRuntime = opts.runtime ?? 'local'
+  if (lock.runtime !== callerRuntime) return false
+
+  if (lock.runtime === 'docker') {
+    if (!lock.container || !lock.instanceId) return !lockIsSettling(lockDir, opts)
+    if (lock.container !== (opts.containerName ?? '')) return false
+    return lock.instanceId !== opts.instanceId
+  }
+
   if (!isPid(lock.pid) || !lock.identity) {
     // An incomplete record: either a claim still in progress (leave it alone)
     // or one that died mid-write (reclaimable once the settle window passes).

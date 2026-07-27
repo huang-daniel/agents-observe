@@ -24,6 +24,39 @@ observe_lifecycle_deadline() { # [seconds]
   printf '%s\n' "$(( $(observe_now_epoch) + ${1:-$OBSERVE_START_TIMEOUT} + 1 ))"
 }
 
+# How long a start attempt waits for confirmation. A docker start may have to
+# pull an image before the collector exists at all, which is a different order
+# of magnitude from forking a local process.
+observe_start_timeout_for() { # <runtime>
+  case "${1:-local}" in
+    docker) printf '%s\n' "$OBSERVE_DOCKER_START_TIMEOUT" ;;
+    *) printf '%s\n' "$OBSERVE_START_TIMEOUT" ;;
+  esac
+}
+
+# How long to wait for a signalled collector to release its lock and heartbeat.
+# `docker stop` gives the container its own grace period before killing it, so
+# the host has to outwait that rather than the local process's shutdown.
+observe_shutdown_timeout_for() { # <runtime>
+  case "${1:-local}" in
+    docker) printf '%s\n' "$(( OBSERVE_DOCKER_STOP_TIMEOUT + OBSERVE_START_TIMEOUT ))" ;;
+    *) printf '%s\n' "$OBSERVE_START_TIMEOUT" ;;
+  esac
+}
+
+# A fresh instance id for a collector run the supervisor is about to start.
+# Only the docker path needs one: a local collector is identified by the PID we
+# forked, while a container has to be told which run it is before it starts, so
+# the host can recognise it afterwards.
+observe_new_instance_id() {
+  if [ -r /proc/sys/kernel/random/uuid ]; then
+    tr -d '\n' < /proc/sys/kernel/random/uuid
+    printf '\n'
+  else
+    printf '%s-%s-%s\n' "$(observe_now_epoch)" "${BASHPID:-$$}" "$RANDOM"
+  fi
+}
+
 # Wait for the start lock rather than racing a peer. The bounded wait is an
 # explicit policy: on timeout, the caller fails rather than creating a second
 # collector. A dead start-lock holder is reclaimed by the primitive itself.
@@ -41,7 +74,44 @@ observe_lifecycle_release_start_lock() {
   observe_start_lock_release || true
 }
 
-observe_spawn_collector() { # prints spawned PID
+# Start one collector in whichever runtime this host supports, and print the
+# token that identifies the run so the caller can bind its confirmation to the
+# thing it actually started rather than to any healthy successor that shows up
+# during a race. The token is a PID for a local collector and an instance id for
+# a containerized one — see observe_wait_for_spawned_collector.
+observe_spawn_collector() { # prints the spawned owner token
+  case "$(observe_resolved_runtime)" in
+    docker) observe_spawn_collector_docker ;;
+    *) observe_spawn_collector_local ;;
+  esac
+}
+
+# Hand the container start to the Node CLI rather than re-implementing image
+# pulls, version checks, port fallback and bind mounts in bash. That keeps one
+# implementation of "run the container" (hooks/scripts/lib/docker.mjs) while
+# supervision keeps its single decision point here.
+#
+# The instance id is generated *before* the container starts and passed in, so
+# the container carries it as a label from birth: that label is what lets the
+# host tell this collector run from an earlier one with the same name.
+observe_spawn_collector_docker() { # prints the instance id
+  local cli token
+  cli="$OBSERVE_ROOT/hooks/scripts/observe_cli.mjs"
+  [ -f "$cli" ] || return 1
+  command -v node > /dev/null 2>&1 || return 1
+  command -v docker > /dev/null 2>&1 || return 1
+
+  token=$(observe_new_instance_id)
+  [ -n "$token" ] || return 1
+  (
+    AGENTS_OBSERVE_INSTANCE_ID=$token \
+      AGENTS_OBSERVE_DATA_ROOT=$OBSERVE_DATA_ROOT \
+      nohup node "$cli" start < /dev/null > /dev/null 2>&1 &
+  )
+  printf '%s\n' "$token"
+}
+
+observe_spawn_collector_local() { # prints spawned PID
   local entrypoint data_dir db_path client_dist_path
   [ -d "$OBSERVE_ROOT/app/server" ] || return 1
 
@@ -81,25 +151,38 @@ observe_spawn_collector() { # prints spawned PID
   )
 }
 
-# Confirm a specific child, not merely any healthy successor that happened to
-# appear during a race. The predicate below remains the one canonical health
-# decision: this only binds its healthy result to the PID we launched.
-observe_wait_for_spawned_collector() { # <pid>
-  local spawned=${1:-} deadline
-  observe_is_pid "$spawned" || return 1
-  deadline=$(observe_lifecycle_deadline)
+# Confirm the collector we started, not merely any healthy successor that
+# happened to appear during a race. The predicate below remains the one
+# canonical health decision: this only binds its healthy result to the run we
+# launched — by PID for a local collector, by instance id for a container, whose
+# PID lives in a namespace this host cannot read.
+observe_wait_for_spawned_collector() { # <token> [runtime]
+  local spawned=${1:-} runtime=${2:-local} deadline
+  [ -n "$spawned" ] || return 1
+  [ "$runtime" = docker ] || observe_is_pid "$spawned" || return 1
+  deadline=$(observe_lifecycle_deadline "$(observe_start_timeout_for "$runtime")")
   while :; do
     if observe_collector_healthy && observe_collector_lock_snapshot >/dev/null; then
-      [ "$OBSERVE_LOCK_PID" = "$spawned" ] && return 0
+      if [ "$runtime" = docker ]; then
+        # Either the run we asked for, or the container we manage: docker allows
+        # one live container per name, so a healthy collector running as *that*
+        # container is this data root's collector however it got started. A peer
+        # supervisor winning the race is a success, not a duplicate.
+        [ "$OBSERVE_LOCK_INSTANCE_ID" = "$spawned" ] && return 0
+        [ -n "$OBSERVE_LOCK_CONTAINER" ] &&
+          [ "$OBSERVE_LOCK_CONTAINER" = "$OBSERVE_DOCKER_CONTAINER" ] && return 0
+      else
+        [ "$OBSERVE_LOCK_PID" = "$spawned" ] && return 0
+      fi
     fi
     [ "$(observe_now_epoch)" -ge "$deadline" ] && return 1
     sleep "$OBSERVE_START_POLL"
   done
 }
 
-observe_wait_for_collector_release() {
+observe_wait_for_collector_release() { # [seconds]
   local deadline
-  deadline=$(observe_lifecycle_deadline)
+  deadline=$(observe_lifecycle_deadline "${1:-$OBSERVE_START_TIMEOUT}")
   while :; do
     [ ! -d "$OBSERVE_LOCK" ] && [ ! -e "$OBSERVE_HEARTBEAT" ] && return 0
     [ "$(observe_now_epoch)" -ge "$deadline" ] && return 1

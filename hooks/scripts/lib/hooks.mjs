@@ -2,9 +2,8 @@
 // Hook command implementations for the Agents Observe CLI.
 // Separated from observe_cli.mjs to keep the CLI entrypoint thin.
 
-import { postJson, getJson } from './http.mjs'
+import { postJson } from './http.mjs'
 import { handleCallbackRequests } from './callbacks.mjs'
-import { startServer } from './docker.mjs'
 import { getAgentClass, getAgentLib } from './agents/index.mjs'
 
 // -- Helpers ----------------------------------------------------------
@@ -198,91 +197,6 @@ export async function hookSyncCommand(config, log) {
     handleSuccessResponse(result, config, log)
   } catch (err) {
     log.error(`hook-sync failed: ${err.message}`)
-    outputClaudeSystemMessage(`Agents Observe: internal error. Run /observe status for help.`)
-  }
-}
-
-/**
- * hook-autostart: Like hook-sync, but auto-starts the server if unreachable.
- * Waits up to hookStartupTimeout ms for the server to become healthy.
- */
-export async function hookAutostartCommand(config, log) {
-  muteConsole()
-
-  try {
-    const { result, envelope } = await sendHookSync(config, log)
-
-    // Server is reachable — handle normally
-    if (result && result.status !== 0) {
-      handleSuccessResponse(result, config, log)
-      return
-    }
-
-    // Server unreachable — auto-start (only if using a local server)
-    if (config.hasCustomApiUrl) {
-      log.warn('Server unreachable at custom API URL — skipping auto-start')
-      outputClaudeSystemMessage(
-        `Agents Observe: server unreachable at ${config.apiBaseUrl}. Run /observe status for help.`,
-      )
-      return
-    }
-
-    log.warn('Server not running, auto-starting...')
-
-    // Start the server in the background — don't await it directly because
-    // docker pull + health loop can exceed the timeout. Instead, poll for
-    // health independently so we detect the server as soon as it's up.
-    let startFinished = false
-    const startPromise = startServer(config, log).then((port) => {
-      startFinished = true
-      return port
-    })
-
-    // Poll for health until the server is up or we hit the timeout
-    const deadline = Date.now() + config.hookStartupTimeout
-    let actualPort = null
-    while (Date.now() < deadline) {
-      const h = await getJson(`${config.apiBaseUrl}/health`, { log: null })
-      if (h.status === 200 && h.body?.ok) {
-        actualPort = config.serverPort
-        break
-      }
-      if (startFinished) {
-        actualPort = await startPromise
-        break
-      }
-      await new Promise((r) => setTimeout(r, 1000))
-    }
-
-    if (!actualPort) {
-      outputClaudeSystemMessage(
-        `Agents Observe: server is starting (timed out after ${
-          config.hookStartupTimeout / 1000
-        }s). Run /observe status to check.`,
-      )
-      return
-    }
-
-    log.info(`Server auto-started on port ${actualPort}`)
-
-    // Retry sending the original event if we have one
-    if (envelope) {
-      const retryUrl = `http://127.0.0.1:${actualPort}/api/events`
-      const retry = await postJson(retryUrl, envelope, { log })
-      if (retry.status !== 0) {
-        log.info('Event delivered after auto-start')
-        if (retry.body?.requests) {
-          await handleCallbackRequests(retry.body.requests, { config, log })
-        }
-      } else {
-        log.error(`Event delivery failed after auto-start: ${retry.error}`)
-      }
-    }
-
-    const dashboardUrl = `http://127.0.0.1:${actualPort}`
-    outputClaudeSystemMessage(`Agents Observe: server started. Dashboard: ${dashboardUrl}`)
-  } catch (err) {
-    log.error(`hook-autostart failed: ${err.message}`)
     outputClaudeSystemMessage(`Agents Observe: internal error. Run /observe status for help.`)
   }
 }

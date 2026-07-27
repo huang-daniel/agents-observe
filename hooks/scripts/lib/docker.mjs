@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { getJson } from './http.mjs'
 import { initLocalDataDirs, getServerEnv } from './config.mjs'
-import { saveServerPortFile, removeServerPortFile } from './fs.mjs'
+import { saveServerPortFile, removeServerPortFile, ensureSupervisionDirs } from './fs.mjs'
 
 // -- Shell helper -------------------------------------------------
 
@@ -78,7 +78,19 @@ async function getContainerState(config) {
   const running = statusResult.ok && statusResult.stdout === 'true'
   const versionMatch = label === (config.expectedVersion || 'unknown')
 
-  return { exists: true, running, versionMatch, labelVersion: label }
+  // The collector run baked into this container. A stopped container keeps the
+  // instance id it was created with — supervision would then wait forever for a
+  // run that can never appear, so a caller asking for a specific instance has
+  // to get a fresh container rather than a fast `docker start`.
+  const instanceResult = await run('docker', [
+    'inspect',
+    '--format',
+    `{{index .Config.Labels "${config.dockerInstanceLabel}"}}`,
+    config.containerName,
+  ])
+  const instanceId = instanceResult.ok ? instanceResult.stdout : ''
+
+  return { exists: true, running, versionMatch, labelVersion: label, instanceId }
 }
 
 // -- Docker lifecycle ---------------------------------------------
@@ -124,6 +136,22 @@ export function buildDataMount(dataDir, relabel = false) {
  * `exists` is injectable so the filter can be unit-tested with Windows-style
  * paths on a POSIX host.
  */
+/**
+ * Build the `-v` args for the collector's supervision data root.
+ *
+ * Mounted at the *same absolute path* inside the container, which is what makes
+ * one supervision contract work across the boundary: the lock records a data
+ * root, the spool consumer resolves paths from it, and the host reads both
+ * back. A translated path would make every one of those comparisons a mismatch.
+ *
+ * Empty when there is no data root to share, or when it is the same directory
+ * the DB mount already covers. Returns a flat array for `docker run`.
+ */
+export function buildSupervisionMounts(dataRoot, relabel = false) {
+  if (!dataRoot || !dataRoot.startsWith('/')) return []
+  return ['-v', `${dataRoot}:${dataRoot}${relabel ? ':z' : ''}`]
+}
+
 export function buildTranscriptMounts(
   { claudeHost, codexHost, enabled, relabel = false },
   exists = existsSync,
@@ -175,6 +203,9 @@ export async function startServer(config, log = console) {
 
   // Ensure the local data dir has been created
   initLocalDataDirs(config)
+  // ...and the supervision layout, before the root-owned container can create
+  // it instead and lock the hooks out of their own spool.
+  ensureSupervisionDirs(config)
 
   // Check existing container state
   const state = await getContainerState(config)
@@ -190,6 +221,11 @@ export async function startServer(config, log = console) {
       }
       // Running but not healthy — remove and do a fresh start
       log.warn('Container is running but unhealthy, restarting...')
+      await safeRemoveContainer(config, log)
+    } else if (config.instanceId && state.instanceId !== config.instanceId) {
+      // A supervisor asked for a specific collector run; this container is a
+      // different one and cannot become it.
+      log.info('Recreating container for the requested collector instance...')
       await safeRemoveContainer(config, log)
     } else if (state.versionMatch) {
       // Stopped container with correct version — fast restart
@@ -250,11 +286,17 @@ export async function startServer(config, log = console) {
       config.containerName,
       '--label',
       `${config.dockerLabel}=${labelValue}`,
+      // The collector run this container is. Supervision reads this label back
+      // to tell this run from an earlier one that shared the container name —
+      // the container equivalent of a PID's start time.
+      '--label',
+      `${config.dockerInstanceLabel}=${serverEnv.AGENTS_OBSERVE_INSTANCE_ID}`,
       '-p',
       portMapping,
       ...envArgs,
       '-v',
       buildDataMount(config.dataDir, config.selinuxRelabel),
+      ...buildSupervisionMounts(config.supervisionDataRoot, config.selinuxRelabel),
       ...transcriptMounts,
       config.dockerImage,
     ]

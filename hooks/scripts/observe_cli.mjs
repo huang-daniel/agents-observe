@@ -12,7 +12,7 @@ import { getJson } from './lib/http.mjs'
 import { createLogger } from './lib/logger.mjs'
 import { startServer, stopServer } from './lib/docker.mjs'
 import { removeDatabase } from './lib/fs.mjs'
-import { hookCommand, hookSyncCommand, hookAutostartCommand } from './lib/hooks.mjs'
+import { hookCommand, hookSyncCommand } from './lib/hooks.mjs'
 
 const cliArgs = parseArgs(process.argv.slice(2))
 const config = getConfig(cliArgs)
@@ -23,7 +23,6 @@ switch (cliArgs.commands[0] || 'help') {
     console.log('Usage: node observe_cli.mjs <command> [--base-url URL] [--project-slug SLUG]')
     console.log('  hook:            Send an event (fire-and-forget)')
     console.log('  hook-sync:       Send an event and return systemMessage JSON')
-    console.log('  hook-autostart:  Like hook-sync, but auto-starts server if unreachable')
     console.log('  health:          Check the server health')
     console.log('  start:           Start the server')
     console.log('  stop:            Stop the server')
@@ -31,16 +30,12 @@ switch (cliArgs.commands[0] || 'help') {
     console.log('  db-reset:        Delete the SQLite database [--force to skip confirmation]')
     console.log('  logs-server:     Show Docker container logs (passthrough, e.g. -f, -n 100)')
     console.log('  logs-cli [-n N]: Tail the local cli.log file (default 20 lines)')
-    console.log('  logs-mcp [-n N]: Tail the local mcp.log file (default 20 lines)')
     process.exit(0)
   case 'hook':
     hookCommand(config, log)
     break
   case 'hook-sync':
     hookSyncCommand(config, log)
-    break
-  case 'hook-autostart':
-    hookAutostartCommand(config, log)
     break
   case 'health':
     healthCommand()
@@ -62,9 +57,6 @@ switch (cliArgs.commands[0] || 'help') {
     break
   case 'logs-cli':
     logsFileCommand('cli.log')
-    break
-  case 'logs-mcp':
-    logsFileCommand('mcp.log')
     break
   default:
     console.error(`Unknown command: ${cliArgs.commands[0]}`)

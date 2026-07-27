@@ -97,6 +97,15 @@ export const config = {
   shutdownDelayMs: parseInt(process.env.AGENTS_OBSERVE_SHUTDOWN_DELAY_MS || '30000', 10),
   // Consumer tracker tuning
   consumerTtlMs: 30_000,
+  // How long an agent session counts as an active consumer after its last
+  // stored event. Long enough to cover an agent thinking, running a slow tool,
+  // or waiting on the user between prompts — the collector should not exit out
+  // from under a session that is merely quiet. Short enough that a session that
+  // dies without a SessionEnd cannot pin the collector alive indefinitely.
+  sessionActivityTtlMs: parseInt(
+    process.env.AGENTS_OBSERVE_SESSION_ACTIVITY_TTL_MS || '300000',
+    10,
+  ),
   sweepIntervalMs: 10_000,
   startupGraceMs: 60_000,
 
@@ -115,6 +124,13 @@ export const config = {
     // explicitly when something outside the process needs to predict it.
     instanceId: process.env.AGENTS_OBSERVE_INSTANCE_ID || '',
     entrypointMarker: process.env.AGENTS_OBSERVE_ENTRYPOINT_MARKER || 'agents-observe-collector',
+    // Which runtime this collector is being supervised as. It follows the
+    // server runtime itself: a collector inside the managed container is
+    // identified by that container, because its PID belongs to a namespace the
+    // supervising host cannot read. The container cannot discover its own name,
+    // so whoever starts it passes it in — see hooks/scripts/lib/docker.mjs.
+    collectorRuntime: detectRuntime() === 'docker' ? ('docker' as const) : ('local' as const),
+    containerName: process.env.AGENTS_OBSERVE_COLLECTOR_CONTAINER || '',
     healthGraceSeconds: parseInt(process.env.AGENTS_OBSERVE_HEALTH_GRACE || '30', 10),
     heartbeatIntervalMs: parseInt(process.env.AGENTS_OBSERVE_HEARTBEAT_INTERVAL_MS || '5000', 10),
     lockSettleSeconds: parseInt(process.env.AGENTS_OBSERVE_LOCK_SETTLE || '2', 10),

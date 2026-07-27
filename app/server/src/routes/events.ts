@@ -24,6 +24,7 @@ import { resolveProject } from '../services/project-resolver'
 import { computeEventSignature } from '../utils/event-signature'
 import { config } from '../config'
 import { apiError } from '../errors'
+import { endAgentSession, noteAgentActivity } from '../consumer-tracker'
 
 type Env = {
   Variables: {
@@ -85,6 +86,16 @@ router.post('/events', async (c) => {
   }
 
   try {
+    // A session that is producing events counts as a consumer, so the idle
+    // auto-shutdown cannot pull the collector out from under a working agent
+    // that has no dashboard tab open. The durable spool path does the same in
+    // its own commit — see consumer-tracker.ts.
+    if (envelope.hookName === 'SessionEnd') {
+      endAgentSession(envelope.sessionId)
+    } else {
+      noteAgentActivity(envelope.sessionId)
+    }
+
     // ---- Step 2: upsert session ------------------------------------------
     // Read existing row first so we can tell whether this is a fresh
     // session — `requests` and project resolution both depend on that.

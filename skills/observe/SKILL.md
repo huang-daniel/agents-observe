@@ -1,7 +1,7 @@
 ---
 name: observe
 description: Agents Observe dashboard and server management
-argument-hint: [view|stats|status|start|stop|restart|logs-server|logs-cli|logs-mcp|debug]
+argument-hint: [view|stats|status|start|stop|restart|logs-server|logs-cli|debug]
 user_invocable: true
 ---
 
@@ -20,8 +20,7 @@ Agents Observe dashboard and server management.
 - `/observe restart` — Restart the server
 - `/observe logs-server` — Show recent Docker container logs
 - `/observe logs-cli` — Tail the local cli.log file
-- `/observe logs-mcp` — Tail the local mcp.log file
-- `/observe debug` — Diagnose server issues (health, docker logs, mcp.log, cli.log)
+- `/observe debug` — Diagnose server issues (health, collector supervision, docker logs, cli.log)
 
 ## Instructions
 
@@ -114,14 +113,6 @@ Opens the current session's stats modal in the dashboard, using a deep-link URL.
    ```
 2. Show the output to the user.
 
-### /observe logs-mcp
-
-1. Run:
-   ```bash
-   scripts/cli.sh logs-mcp -n 50
-   ```
-2. Show the output to the user.
-
 ### /observe debug
 
 Run these checks in sequence. Read each output before running the next — use what you learn to diagnose the issue.
@@ -136,10 +127,13 @@ Run these checks in sequence. Read each output before running the next — use w
    scripts/cli.sh logs-server -n 20
    ```
 
-3. **MCP log (last 20 lines):**
+3. **Collector supervision (the one thing that starts and keeps the collector alive):**
    ```bash
-   scripts/cli.sh logs-mcp -n 20
+   hooks/scripts/supervision/observe-health.sh
    ```
+   Exit 0 is healthy. Exit 1 means absent or unhealthy — a supervisor may start
+   it, and the next hook will. Exit 2 is an ownership state nothing should act
+   on blindly; read `reason=` and see docs/collector-supervision.md.
 
 4. **CLI log (last 20 lines):**
    ```bash
@@ -149,6 +143,8 @@ Run these checks in sequence. Read each output before running the next — use w
 5. **Analyze the results** and tell the user:
    - Is the server running? What version?
    - Are there errors in the docker logs? (look for crash loops, port conflicts, DB errors)
-   - Are there errors in mcp.log? (look for startServer failures, image pull errors)
+   - What does collector supervision report, and does the reason explain the symptom?
    - Are there errors in cli.log? (look for ECONNREFUSED, hook delivery failures)
+   - Is the durable spool draining? A growing `<data root>/runtime/spool/pending` with no healthy
+     collector means events are being captured but nothing is committing them.
    - Suggest specific fixes based on what you find.

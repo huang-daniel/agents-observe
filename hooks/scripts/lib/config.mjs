@@ -1,5 +1,5 @@
 // hooks/scripts/lib/config.mjs
-// Centralized config resolution for Agents Observe CLI and MCP server.
+// Centralized config resolution for the Agents Observe CLI and hook scripts.
 // No dependencies - uses only Node.js built-ins.
 
 import { resolve, dirname } from 'node:path'
@@ -23,7 +23,7 @@ const installDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../../')
 export function getConfig(overrides = {}) {
   /** Name of plugin to use for validating CLAUDE_PLUGIN_* env vars at runtime */
   const pluginName = 'agents-observe'
-  /** True when claude is running the scripts as via plugin hooks or mcp */
+  /** True when claude is running the scripts via plugin hooks */
   const isPlugin = !!process.env.CLAUDE_PLUGIN_DATA
 
   /** Runtime used by start scripts: docker | local | dev */
@@ -89,6 +89,17 @@ export function getConfig(overrides = {}) {
   }
 
   const dataDir = `${localDataRootDir}/data`
+
+  // The collector supervision namespace — the lock, heartbeat and durable spool
+  // the hooks and the collector share. This deliberately mirrors
+  // `observe_env_init` in hooks/scripts/supervision/lib/observe-env.sh rather
+  // than reusing localDataRootDir: the shell knows nothing about
+  // CLAUDE_PLUGIN_DATA, and the two sides read and write the same files, so
+  // they have to resolve the same path. See docs/collector-supervision.md.
+  const supervisionDataRoot =
+    process.env.AGENTS_OBSERVE_DATA_ROOT ||
+    process.env.AGENTS_OBSERVE_LOCAL_DATA_ROOT ||
+    (homeDir ? resolve(homeDir, `.${pluginName}`) : '')
 
   const serverPortFile = `${localDataRootDir}/${serverPortFileName}`
   const serverPort = overrides.serverPort || process.env.AGENTS_OBSERVE_SERVER_PORT || '4981'
@@ -220,14 +231,24 @@ export function getConfig(overrides = {}) {
     dataDir,
     databaseFileName: 'observe.db',
 
+    /** Collector supervision namespace — see the resolution note above. */
+    supervisionDataRoot,
+    /**
+     * Identifies one collector *run*. The supervisor arm generates this before
+     * starting the container and passes it in, so the container can be labelled
+     * with it and recognised from the host afterwards. Empty when nothing
+     * outside the collector needs to predict it.
+     */
+    instanceId: process.env.AGENTS_OBSERVE_INSTANCE_ID || '',
+    /** Label the container carries its instance id under. */
+    dockerInstanceLabel:
+      process.env.AGENTS_OBSERVE_DOCKER_INSTANCE_LABEL || 'simple10-agents-observe.instance',
+
     API_ID: 'agents-observe',
     dockerLabel: 'simple10-agents-observe.managed',
     /** True when docker bind mounts should carry the SELinux `z` relabel option (issue #20). */
     selinuxRelabel,
     expectedVersion: version,
-
-    /** Max ms to wait for server startup in hook-autostart before returning a timeout message */
-    hookStartupTimeout: parseInt(process.env.AGENTS_OBSERVE_HOOK_STARTUP_TIMEOUT || '30000', 10),
 
     /**
      * Maximum base64-encoded image data size (in chars) kept in the
@@ -290,6 +311,15 @@ export function getServerEnv(config) {
         : resolve(config.installDir, 'app/client/dist'),
     AGENTS_OBSERVE_LOG_LEVEL: config.logLevel,
     AGENTS_OBSERVE_RUNTIME: isDocker ? 'docker' : 'local',
+    // Collector supervision. The data root is bind-mounted at the same absolute
+    // path in docker mode, so the lock, heartbeat and spool the collector reads
+    // are the same files the hooks write — and the paths recorded inside them
+    // mean the same thing on both sides of the container boundary.
+    AGENTS_OBSERVE_DATA_ROOT: config.supervisionDataRoot,
+    AGENTS_OBSERVE_INSTANCE_ID: config.instanceId,
+    // A container cannot discover its own name, and that name is half of the
+    // identity the host verifies it by, so it is passed in.
+    AGENTS_OBSERVE_COLLECTOR_CONTAINER: isDocker ? config.containerName : '',
     // Interface the server binds to. In docker the container must listen on
     // 0.0.0.0 — the host-side `-p ${bindHost}:...` mapping is what enforces
     // the loopback boundary. In local/dev the server binds the configured

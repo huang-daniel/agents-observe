@@ -12,7 +12,7 @@
 // Resolution is READ-ONLY. Nothing here creates a directory unless the caller
 // asks via `ensureRuntimeDir`.
 
-import { mkdirSync, readFileSync, statSync } from 'node:fs'
+import { chownSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 
 export interface RuntimePaths {
   dataRoot: string
@@ -84,6 +84,40 @@ export function runtimePaths(dataRoot: string): RuntimePaths {
 /** Create the runtime directory. Split out so path resolution stays pure. */
 export function ensureRuntimeDir(paths: RuntimePaths): void {
   mkdirSync(paths.runtimeDir, { recursive: true })
+}
+
+/**
+ * Give supervision state the same owner as the data root it lives in, and only
+ * when this process is root and the two disagree.
+ *
+ * One data root is shared by two identities in the docker runtime: the hooks
+ * write the spool as the user, and the collector inside the container writes
+ * the lock and heartbeat as root. Files the host cannot remove would strand the
+ * data root the first time a container dies without releasing its lock —
+ * removing a lock directory needs write access to the directory itself, which
+ * root's 0755 does not grant. Failures are ignored: this is a courtesy to the
+ * other identity, never a condition of holding the lock.
+ */
+export function alignOwnerWithDataRoot(
+  path: string,
+  dataRoot: string,
+  children: readonly string[] = [],
+): void {
+  if (process.getuid?.() !== 0) return
+  let owner: { uid: number; gid: number }
+  try {
+    owner = statSync(dataRoot)
+  } catch {
+    return
+  }
+  if (owner.uid === 0) return
+  for (const target of [path, ...children.map((name) => `${path}/${name}`)]) {
+    try {
+      chownSync(target, owner.uid, owner.gid)
+    } catch {
+      // Best effort — the collector still owns the lock either way.
+    }
+  }
 }
 
 /**

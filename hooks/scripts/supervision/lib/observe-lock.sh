@@ -46,7 +46,7 @@ OBSERVE_LOCK_SH_LOADED=1
 # abandoned, so a competing acquirer cannot delete a lock mid-claim.
 OBSERVE_LOCK_SETTLE=${AGENTS_OBSERVE_LOCK_SETTLE:-2}
 
-OBSERVE_LOCK_FILES='pid pid-identity executable entrypoint data-root instance-id started-at'
+OBSERVE_LOCK_FILES='pid pid-identity executable entrypoint data-root instance-id started-at runtime container'
 
 # Stage 2 of a claim: create `pid` with O_CREAT|O_EXCL. Succeeds for exactly one
 # process; every other caller sees the file already there and fails.
@@ -65,8 +65,9 @@ observe_lock_claim_pid() { # <lock-dir> <pid>
 # process that just won stage 2. The readback is not paranoia: on a full or
 # read-only filesystem the writes can fail quietly enough to leave a lock whose
 # owner cannot be verified later.
-observe_lock_write_details() { # <lock-dir> <instance-id> <entrypoint-marker> <pid>
+observe_lock_write_details() { # <lock-dir> <instance-id> <entrypoint-marker> <pid> [runtime] [container]
   local lockdir=${1:-} instance=${2:-} entrypoint=${3:-} pid=${4:-}
+  local runtime=${5:-local} container=${6:-}
   local identity exe back
   [ -d "$lockdir" ] || return 1
   observe_is_pid "$pid" || return 1
@@ -80,6 +81,8 @@ observe_lock_write_details() { # <lock-dir> <instance-id> <entrypoint-marker> <p
       printf '%s\n' "$entrypoint" > "$lockdir/entrypoint" &&
       printf '%s\n' "${OBSERVE_DATA_ROOT:-}" > "$lockdir/data-root" &&
       printf '%s\n' "$instance" > "$lockdir/instance-id" &&
+      printf '%s\n' "$runtime" > "$lockdir/runtime" &&
+      printf '%s\n' "$container" > "$lockdir/container" &&
       printf '%s\n' "$(observe_now_epoch)" > "$lockdir/started-at" &&
       printf '%s\n' "$identity" > "$lockdir/pid-identity"
   } 2>/dev/null || return 1
@@ -92,8 +95,9 @@ observe_lock_write_details() { # <lock-dir> <instance-id> <entrypoint-marker> <p
 # then confirm the lock still names us. The final confirmation matters because a
 # concurrent reclaim could have removed our lock between stages; failing here is
 # correct and safe — the caller simply did not get the lock.
-observe_lock_try_claim() { # <lock-dir> <instance-id> <entrypoint-marker> [pid]
+observe_lock_try_claim() { # <lock-dir> <instance-id> <entrypoint-marker> [pid] [runtime] [container]
   local lockdir=${1:-} instance=${2:-} entrypoint=${3:-} pid=${4:-} back
+  local runtime=${5:-local} container=${6:-}
   [ -n "$lockdir" ] || return 1
   [ -n "$pid" ] || pid=${BASHPID:-$$}
   observe_is_pid "$pid" || return 1
@@ -102,7 +106,7 @@ observe_lock_try_claim() { # <lock-dir> <instance-id> <entrypoint-marker> [pid]
   [ -d "$lockdir" ] || return 1
 
   observe_lock_claim_pid "$lockdir" "$pid" || return 1
-  if ! observe_lock_write_details "$lockdir" "$instance" "$entrypoint" "$pid"; then
+  if ! observe_lock_write_details "$lockdir" "$instance" "$entrypoint" "$pid" "$runtime" "$container"; then
     observe_lock_release_if_owner "$lockdir" "$pid"
     return 1
   fi
@@ -137,10 +141,23 @@ observe_lock_is_settling() { # <lock-dir>
 }
 
 # True when a lock directory exists but its recorded owner is provably gone.
+#
+# Which proof applies depends on the runtime the lock was written by: a host
+# process is judged by PID identity, a container by whether that container is
+# still running this instance. Neither proof is available for the other runtime,
+# and "I cannot see it" is never "it is gone" — `observe_container_state` keeps
+# an unverifiable container out of the abandoned branch for exactly that reason.
 observe_lock_is_abandoned() { # <lock-dir>
-  local lockdir=${1:-} pid identity
+  local lockdir=${1:-} pid identity runtime
   [ -n "$lockdir" ] || return 1
   [ -d "$lockdir" ] || return 1
+
+  runtime=$(observe_lock_runtime "$lockdir")
+  if [ "$runtime" = docker ]; then
+    observe_container_matches_lock "$lockdir" && return 1
+    [ "$OBSERVE_CONTAINER_STATE" = unverifiable ] && return 1
+    return 0
+  fi
 
   pid=$(observe_read_line "$lockdir/pid" 2>/dev/null || true)
   identity=$(observe_read_line "$lockdir/pid-identity" 2>/dev/null || true)
@@ -196,12 +213,12 @@ observe_start_lock_release() { # [lock-dir]
 # Claim the collector lock for <instance-id>. Called by the collector itself
 # (PR2) once it is up, never by a supervisor on the collector's behalf — the
 # lock must record the identity of the process that actually serves.
-observe_collector_lock_claim() { # <instance-id> [pid] [entrypoint-marker] [lock-dir]
+observe_collector_lock_claim() { # <instance-id> [pid] [entrypoint-marker] [lock-dir] [runtime] [container]
   local instance=${1:-} pid=${2:-} entrypoint=${3:-${OBSERVE_ENTRYPOINT_MARKER:-}}
-  local lockdir=${4:-${OBSERVE_LOCK:-}}
+  local lockdir=${4:-${OBSERVE_LOCK:-}} runtime=${5:-local} container=${6:-}
   [ -n "$instance" ] || return 1
   [ -n "$lockdir" ] || return 1
-  observe_lock_try_claim "$lockdir" "$instance" "$entrypoint" "$pid"
+  observe_lock_try_claim "$lockdir" "$instance" "$entrypoint" "$pid" "$runtime" "$container"
 }
 
 # Read the lock into OBSERVE_LOCK_* globals and echo them as key=value lines.
@@ -213,6 +230,8 @@ OBSERVE_LOCK_ENTRYPOINT=
 OBSERVE_LOCK_DATA_ROOT=
 OBSERVE_LOCK_INSTANCE_ID=
 OBSERVE_LOCK_STARTED_AT=
+OBSERVE_LOCK_RUNTIME=
+OBSERVE_LOCK_CONTAINER=
 observe_collector_lock_snapshot() { # [lock-dir]
   local lockdir=${1:-${OBSERVE_LOCK:-}}
   OBSERVE_LOCK_PID=
@@ -222,6 +241,8 @@ observe_collector_lock_snapshot() { # [lock-dir]
   OBSERVE_LOCK_DATA_ROOT=
   OBSERVE_LOCK_INSTANCE_ID=
   OBSERVE_LOCK_STARTED_AT=
+  OBSERVE_LOCK_RUNTIME=
+  OBSERVE_LOCK_CONTAINER=
   [ -n "$lockdir" ] || return 1
   [ -d "$lockdir" ] || return 1
 
@@ -232,6 +253,8 @@ observe_collector_lock_snapshot() { # [lock-dir]
   OBSERVE_LOCK_DATA_ROOT=$(observe_read_line "$lockdir/data-root" 2>/dev/null || true)
   OBSERVE_LOCK_INSTANCE_ID=$(observe_read_line "$lockdir/instance-id" 2>/dev/null || true)
   OBSERVE_LOCK_STARTED_AT=$(observe_read_line "$lockdir/started-at" 2>/dev/null || true)
+  OBSERVE_LOCK_RUNTIME=$(observe_lock_runtime "$lockdir")
+  OBSERVE_LOCK_CONTAINER=$(observe_read_line "$lockdir/container" 2>/dev/null || true)
 
   printf 'pid=%s\n' "$OBSERVE_LOCK_PID"
   printf 'pid-identity=%s\n' "$OBSERVE_LOCK_IDENTITY"
@@ -240,6 +263,8 @@ observe_collector_lock_snapshot() { # [lock-dir]
   printf 'data-root=%s\n' "$OBSERVE_LOCK_DATA_ROOT"
   printf 'instance-id=%s\n' "$OBSERVE_LOCK_INSTANCE_ID"
   printf 'started-at=%s\n' "$OBSERVE_LOCK_STARTED_AT"
+  printf 'runtime=%s\n' "$OBSERVE_LOCK_RUNTIME"
+  printf 'container=%s\n' "$OBSERVE_LOCK_CONTAINER"
   return 0
 }
 

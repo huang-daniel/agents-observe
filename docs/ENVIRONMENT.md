@@ -30,7 +30,6 @@ shell/TypeScript pairs.
 | `AGENTS_OBSERVE_API_BASE_URL` | *(derived from `AGENTS_OBSERVE_SERVER_PORT`)* | Full URL of the server API (e.g. `http://remote:4981/api`). Overrides the auto-started local Docker server. |
 | `AGENTS_OBSERVE_LOG_LEVEL` | `warn` | CLI log level: `error`, `warn`, `info`, `debug`, `trace`. |
 | `AGENTS_OBSERVE_LOGS_DIR` | `<data root>/logs` | Directory where the CLI writes logs. |
-| `AGENTS_OBSERVE_HOOK_STARTUP_TIMEOUT` | `30000` | Ms the `hook-autostart` command waits for the server to become healthy after starting it. |
 | `AGENTS_OBSERVE_LOCAL_DATA_ROOT` | `$CLAUDE_PLUGIN_DATA` (plugin) / `~/.agents-observe` (else) | Root directory for the SQLite DB, logs, and server-port file. The DB lives at `<root>/data/observe.db`. |
 
 ---
@@ -57,7 +56,8 @@ directly.
 | `AGENTS_OBSERVE_STORAGE_ADAPTER` | `sqlite` | Storage backend. Only `sqlite` is supported today. |
 | `AGENTS_OBSERVE_CLIENT_DIST_PATH` | derived | Path to the built React client (`app/client/dist`). Empty in dev runtime (Vite serves the client). |
 | `AGENTS_OBSERVE_ALLOW_DB_RESET` | `backup` | Admin reset policy: `allow` (wipe without backup), `backup` (snapshot the DB then wipe), `deny` (refuse). |
-| `AGENTS_OBSERVE_SHUTDOWN_DELAY_MS` | `30000` | Ms with no connected clients before the server auto-shuts down. Set to `0` or negative to disable auto-shutdown. |
+| `AGENTS_OBSERVE_SHUTDOWN_DELAY_MS` | `30000` | Ms with no consumers before the collector auto-shuts down. A consumer is a dashboard WebSocket client **or** an agent session that recently produced an event. Set to `0` or negative to disable auto-shutdown. |
+| `AGENTS_OBSERVE_SESSION_ACTIVITY_TTL_MS` | `300000` | How long an agent session keeps counting as a consumer after its last stored event. `SessionEnd` drops it immediately. See [collector-supervision.md](./collector-supervision.md#who-keeps-it-alive). |
 | `AGENTS_OBSERVE_LOG_LEVEL` | `debug` | Server log level. Same values as the CLI variable. |
 
 ---
@@ -117,6 +117,11 @@ the second exits `3`. Give each a different `AGENTS_OBSERVE_DATA_ROOT` (or
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `AGENTS_OBSERVE_COLLECTOR_ENTRYPOINT` | *(empty)* | Optional executable the supervisor arm starts instead of the bundled Node entrypoint. Primarily useful for integration harnesses. |
+| `AGENTS_OBSERVE_COLLECTOR_RUNTIME` | `auto` | Which runtime the collector is supervised as: `local` (a host process) or `docker` (the managed container). `auto` picks `local` when `app/server/node_modules` exists and `docker` otherwise. See [collector-supervision.md](./collector-supervision.md#two-collector-runtimes). |
+| `AGENTS_OBSERVE_DOCKER_INSTANCE_LABEL` | `simple10-agents-observe.instance` | Label the container carries its collector instance id under. Reading it back is how the host proves a running container is *this* collector run. |
+| `AGENTS_OBSERVE_DOCKER_START_TIMEOUT` | `180` | Seconds the supervisor waits for a container start to confirm healthy. Larger than the local timeout because a first start pulls an image. |
+| `AGENTS_OBSERVE_DOCKER_STOP_TIMEOUT` | `10` | Seconds `docker stop` gives the collector to shut down gracefully before killing it. |
+| `AGENTS_OBSERVE_INSTANCE_ID` | *(a fresh UUID)* | Pins the instance id for one collector run. The supervisor sets this when it starts the container so it can recognise the run afterwards. |
 
 ---
 

@@ -4,6 +4,7 @@ import {
   buildPortMapping,
   buildTranscriptMounts,
   buildDataMount,
+  buildSupervisionMounts,
 } from '../../../../hooks/scripts/lib/docker.mjs'
 
 describe('buildPortMapping (issue #22)', () => {
@@ -129,5 +130,37 @@ describe('buildDataMount (issue #20)', () => {
     expect(buildDataMount('/home/me/.agents-observe/data', false)).toBe(
       '/home/me/.agents-observe/data:/data',
     )
+  })
+})
+
+// The container and the hooks share one supervision data root: the hooks write
+// the spool, the collector inside the container drains it, and both read the
+// same lock and heartbeat. That only works if the path means the same thing on
+// both sides — see docs/collector-supervision.md.
+describe('buildSupervisionMounts', () => {
+  it('mounts the data root at the same absolute path inside the container', () => {
+    expect(buildSupervisionMounts('/home/you/.agents-observe')).toEqual([
+      '-v',
+      '/home/you/.agents-observe:/home/you/.agents-observe',
+    ])
+  })
+
+  it('appends the SELinux relabel option when asked (issue #20)', () => {
+    expect(buildSupervisionMounts('/home/you/.agents-observe', true)).toEqual([
+      '-v',
+      '/home/you/.agents-observe:/home/you/.agents-observe:z',
+    ])
+  })
+
+  it('mounts nothing when there is no data root to share', () => {
+    expect(buildSupervisionMounts('')).toEqual([])
+    expect(buildSupervisionMounts(undefined)).toEqual([])
+  })
+
+  it('refuses a non-absolute root, which could not be mounted at its own path', () => {
+    // The shell kernel rejects these outright (observe_data_root_is_safe), and
+    // a Windows host path cannot be a Linux container path either.
+    expect(buildSupervisionMounts('relative/path')).toEqual([])
+    expect(buildSupervisionMounts('C:\\Users\\you\\.agents-observe')).toEqual([])
   })
 })

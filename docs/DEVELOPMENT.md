@@ -10,8 +10,7 @@ Claude Code Hooks  ->  hook.sh  ->  durable spool  ->  API Server (SQLite)  ->  
 ```
 
 - **Hooks** (`hooks/scripts/hook.sh`) read raw JSON from stdin and write it straight to the durable spool, arming the collector via the lock/heartbeat supervisor when it isn't healthy (see [collector-supervision.md](./collector-supervision.md)). Falls back to `observe_cli.mjs` (HTTP POST) only if the spool write itself fails.
-- **CLI** (`hooks/scripts/observe_cli.mjs`) still handles `hook-sync`, `hook-autostart`, `health`, `start`, `stop`, `restart`, `logs`, `db-reset`, and the `hook` fallback above.
-- **MCP** (`hooks/scripts/mcp_server.mjs`) starts the Docker container and maintains a heartbeat. Claude spawns this when loading the plugin.
+- **CLI** (`hooks/scripts/observe_cli.mjs`) handles `hook-sync`, `health`, `start`, `stop`, `restart`, `logs`, `db-reset`, and the `hook` fallback above. The supervisor arm calls `start` for the container in the docker collector runtime — that is the only Docker start path.
 - **Server** (`app/server/`) Hono + SQLite + WebSocket
 - **Client** (`app/client/`) React 19 + shadcn dashboard
 
@@ -23,7 +22,7 @@ In dev mode, client and server run as separate processes on separate ports. In p
 |---------|-------------|
 | `just install` | Install all dependencies |
 | `just dev` | Start server + client in dev mode (hot reload) |
-| `just start` | Start the server (same path as plugin MCP) |
+| `just start` | Start the server in Docker (the same call the supervisor makes) |
 | `just stop` | Stop the server |
 | `just restart` | Restart the server |
 | `just build` | Build the Docker image locally |
@@ -43,7 +42,7 @@ In dev mode, client and server run as separate processes on separate ports. In p
 app/server/        # Hono server, SQLite, WebSocket
   src/supervision/ # Collector lock, heartbeat, and health predicate
 app/client/        # React 19 + shadcn dashboard
-hooks/scripts/     # Hook script, CLI, MCP server
+hooks/scripts/     # Hook entrypoint, CLI, and shared libs
   lib/             # Shared libs: config, docker, fs, http, hooks, callbacks, logger
     agents/        # Agent-class-specific libs (claude-code, codex, unknown)
   supervision/     # Shell-side supervision primitives, health diagnostic, and arm
@@ -53,7 +52,6 @@ scripts/           # Release and test harness scripts
 test/              # Tests (mirrors hooks/scripts structure)
 docs/              # Plans, specs, and this file
 .claude-plugin/    # Plugin + marketplace manifests
-.mcp.json          # MCP server configuration
 Dockerfile         # Production container image
 docker-compose.yml # Reference compose file (not used by plugin)
 justfile           # Task runner commands
