@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest'
 import { processEvent } from './process-event'
-import { isWeakSummary } from './helpers'
+import { isWeakSummary } from '../shared/failure-detection'
 import { compileFilters } from '@/lib/filters/compile'
 import type { Filter } from '@/types'
 import type { ProcessingContext } from '../types'
