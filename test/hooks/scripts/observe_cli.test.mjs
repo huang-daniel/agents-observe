@@ -69,7 +69,6 @@ describe('observe_cli', () => {
       const { stdout } = await runCli(['help'])
       expect(stdout).toContain('Usage:')
       expect(stdout).toContain('hook-sync')
-      expect(stdout).toContain('hook-autostart')
       expect(stdout).toContain('db-reset')
     })
 
@@ -287,56 +286,6 @@ describe('observe_cli', () => {
       } finally {
         server.close()
       }
-    })
-  })
-
-  describe('hook-autostart command', () => {
-    it('returns success message when server is already reachable', async () => {
-      const mock = mockApiHandler({
-        'POST /api/events': { status: 201, body: { ok: true } },
-      })
-      const { server, url } = await startMockServer(mock.handler)
-
-      try {
-        const { stdout } = await runCli(['hook-autostart'], {
-          stdin: JSON.stringify({ hook_event_name: 'SessionStart' }),
-          env: { AGENTS_OBSERVE_API_BASE_URL: `${url}/api` },
-        })
-        const parsed = JSON.parse(stdout)
-        expect(parsed.systemMessage).toContain('logging events')
-      } finally {
-        server.close()
-      }
-    })
-
-    it('skips auto-start when custom API URL is set and unreachable', async () => {
-      // Use a closed loopback port (matching the sibling hook-sync tests
-      // above) rather than an external hostname. A bare name like
-      // `remote-server` is not hermetic: DNS search domains, mDNS, or a
-      // transparent HTTP proxy can resolve/answer it, making the request
-      // unexpectedly succeed and this assertion flap.
-      const { stdout } = await runCli(['hook-autostart'], {
-        stdin: JSON.stringify({ hook_event_name: 'SessionStart' }),
-        env: {
-          AGENTS_OBSERVE_API_BASE_URL: 'http://127.0.0.1:19999/api',
-          AGENTS_OBSERVE_HOOK_STARTUP_TIMEOUT: '1000',
-        },
-      })
-      const parsed = JSON.parse(stdout)
-      expect(parsed.systemMessage).toContain('unreachable')
-      expect(parsed.systemMessage).toContain('127.0.0.1:19999')
-    })
-
-    it('always returns valid JSON even on error', async () => {
-      const { stdout } = await runCli(['hook-autostart'], {
-        stdin: JSON.stringify({ hook_event_name: 'SessionStart' }),
-        env: {
-          AGENTS_OBSERVE_API_BASE_URL: 'http://127.0.0.1:19999/api',
-          AGENTS_OBSERVE_HOOK_STARTUP_TIMEOUT: '1000',
-        },
-      })
-      const parsed = JSON.parse(stdout)
-      expect(parsed.systemMessage).toBeDefined()
     })
   })
 

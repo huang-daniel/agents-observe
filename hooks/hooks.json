@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs hook-autostart"
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook.sh"
           }
         ]
       }

@@ -1,11 +1,34 @@
 // app/server/src/consumer-tracker.ts
-// Tracks registered API consumers (MCP processes) with TTL-based expiry.
-// The server shuts itself down when no consumers and no WS clients remain.
+// Tracks who is currently using this collector, with TTL-based expiry, and
+// shuts the collector down once nobody is.
+//
+// A "consumer" is anything that would notice the collector going away. There
+// are two kinds:
+//
+//   - dashboard clients, counted by the WebSocket module
+//   - agent sessions, registered here every time an event of theirs is stored
+//
+// The second kind is why this file still exists after the plugin's MCP process
+// was retired. That process existed mainly to boot the server, but its
+// heartbeat had a second job: it kept the collector alive while an agent was
+// working and no browser tab was open. Keying auto-shutdown off dashboard
+// clients alone would let the collector exit mid-session and be re-armed by the
+// next hook, over and over. Events would survive that — they are spooled
+// durably — but the restart churn is real, so the signal is preserved rather
+// than dropped: an agent that is producing events *is* a consumer.
+//
+// Session entries expire on their own (`sessionActivityTtlMs`), so a session
+// that dies without a SessionEnd cannot pin the collector alive forever.
 
 import { getClientCount } from './websocket'
 import { config } from './config'
 
-const consumers = new Map<string, number>() // id → last heartbeat timestamp
+interface Consumer {
+  lastSeen: number
+  ttlMs: number
+}
+
+const consumers = new Map<string, Consumer>()
 const startedAt = Date.now()
 const autoShutdownEnabled = config.shutdownDelayMs > 0
 
@@ -20,13 +43,18 @@ if (!autoShutdownEnabled) {
   )
 }
 
+/** Session consumers are namespaced so they can never collide with other ids. */
+function sessionKey(sessionId: string): string {
+  return `session:${sessionId}`
+}
+
 /** Start the periodic sweep that evicts stale consumers. */
 export function startConsumerSweep() {
   if (sweepTimer) return
   sweepTimer = setInterval(() => {
     const now = Date.now()
-    for (const [id, lastSeen] of consumers) {
-      if (now - lastSeen > config.consumerTtlMs) {
+    for (const [id, consumer] of consumers) {
+      if (now - consumer.lastSeen > consumer.ttlMs) {
         consumers.delete(id)
         console.log(`[consumer] Evicted stale consumer ${id}`)
       }
@@ -36,10 +64,30 @@ export function startConsumerSweep() {
 }
 
 /** Register or refresh a consumer heartbeat. Returns current consumer count. */
-export function heartbeat(id: string): number {
-  consumers.set(id, Date.now())
+export function heartbeat(id: string, ttlMs: number = config.consumerTtlMs): number {
+  consumers.set(id, { lastSeen: Date.now(), ttlMs })
   cancelPendingShutdown()
   return consumers.size
+}
+
+/**
+ * An agent session just had an event stored. Both delivery paths call this —
+ * the durable spool consumer and the legacy HTTP events route — so the signal
+ * does not depend on how the event arrived.
+ */
+export function noteAgentActivity(sessionId: string): void {
+  if (!sessionId) return
+  heartbeat(sessionKey(sessionId), config.sessionActivityTtlMs)
+}
+
+/**
+ * A session ended. Dropping it immediately is what lets the collector wind down
+ * promptly after the last agent stops, rather than waiting out the TTL.
+ */
+export function endAgentSession(sessionId: string): void {
+  if (!sessionId) return
+  if (!consumers.delete(sessionKey(sessionId))) return
+  checkShutdown()
 }
 
 /** Remove a consumer. Returns { activeConsumers, activeClients }. */

@@ -9,7 +9,9 @@ claude plugin marketplace add simple10/agents-observe
 claude plugin install agents-observe
 ```
 
-Restart Claude Code. The server auto-starts as a Docker container and the dashboard is at **http://localhost:4981**.
+Restart Claude Code. The plugin's hooks capture every event and arm the collector when it isn't
+running — for a plugin install that means starting the Docker container — and the dashboard is at
+**http://localhost:4981**.
 
 ### Skills
 
@@ -62,6 +64,7 @@ Key points:
 - All env vars are centralized in `hooks/scripts/lib/config.mjs` — never read `process.env` elsewhere
 - TypeScript throughout, kebab-case file names
 - Collector supervision (locks, heartbeat, process identity) has its own contract and invariants — read [docs/collector-supervision.md](docs/collector-supervision.md) before touching `hooks/scripts/supervision/` or `app/server/src/supervision/`. Those two are mirrored implementations of one on-disk contract; tests assert they agree, so change them together
+- `hooks/scripts/hook.sh` is the **only** way any agent starts or reaches the collector — every event spools, then arms the supervisor if it isn't healthy. Don't add a second start path; the supervisor already covers both collector runtimes (host process and Docker container)
 
 ## Commit Convention
 

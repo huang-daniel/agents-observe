@@ -37,6 +37,43 @@ OBSERVE_COLLECTOR_ENTRYPOINT=${AGENTS_OBSERVE_COLLECTOR_ENTRYPOINT:-}
 # paths) and would turn every restart into an identity mismatch.
 OBSERVE_ENTRYPOINT_MARKER=${AGENTS_OBSERVE_ENTRYPOINT_MARKER:-agents-observe-collector}
 
+# Which runtime the collector runs in — see docs/collector-supervision.md
+# § "Two collector runtimes". `auto` resolves at start time: a checkout with the
+# server's dependencies installed runs the collector as a host process, and
+# anything else (notably a Claude plugin install, which is a source-only clone)
+# runs it as the managed Docker container.
+OBSERVE_COLLECTOR_RUNTIME=${AGENTS_OBSERVE_COLLECTOR_RUNTIME:-auto}
+# Name of the managed container. Must agree with `containerName` in
+# hooks/scripts/lib/config.mjs, which is what actually starts it.
+OBSERVE_DOCKER_CONTAINER=${AGENTS_OBSERVE_DOCKER_CONTAINER_NAME:-agents-observe}
+# Label the container carries the collector's instance id under. Reading it back
+# is how the host verifies that a running container is *this* collector run
+# rather than some earlier one that happens to share the name.
+OBSERVE_DOCKER_INSTANCE_LABEL=${AGENTS_OBSERVE_DOCKER_INSTANCE_LABEL:-simple10-agents-observe.instance}
+# Seconds `docker stop` waits for the collector to exit before killing it. It
+# only has to unwind the graceful shutdown sequence.
+OBSERVE_DOCKER_STOP_TIMEOUT=${AGENTS_OBSERVE_DOCKER_STOP_TIMEOUT:-10}
+# A docker start pulls an image on first use, which is far slower than forking a
+# local process, so it gets its own confirmation window.
+OBSERVE_DOCKER_START_TIMEOUT=${AGENTS_OBSERVE_DOCKER_START_TIMEOUT:-180}
+
+# Resolve OBSERVE_COLLECTOR_RUNTIME's `auto` to a concrete runtime. Kept here
+# rather than in the arm so every caller that reasons about a lock agrees on
+# what "this host's runtime" means.
+observe_resolved_runtime() {
+  case "$OBSERVE_COLLECTOR_RUNTIME" in
+    local | docker)
+      printf '%s\n' "$OBSERVE_COLLECTOR_RUNTIME"
+      return 0
+      ;;
+  esac
+  if [ -d "$OBSERVE_ROOT/app/server/node_modules" ]; then
+    printf 'local\n'
+  else
+    printf 'docker\n'
+  fi
+}
+
 # Optional HTTP health endpoint. Empty in PR1 — the collector is not wired to
 # the server yet, so the HTTP leg of the health predicate reports "skipped".
 # PR2 sets this and the leg starts counting without any API change here.

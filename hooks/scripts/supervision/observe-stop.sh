@@ -15,7 +15,7 @@ if [ ! -d "$OBSERVE_LOCK" ]; then
   exit 0
 fi
 
-if ! observe_process_matches_lock; then
+if ! observe_owner_matches_lock; then
   if observe_collector_lock_is_abandoned; then
     observe_lifecycle_log stop no-live-owner
     printf 'collector: no live owner to stop\n'
@@ -27,9 +27,14 @@ if ! observe_process_matches_lock; then
 fi
 
 observe_collector_lock_snapshot >/dev/null
-observe_lifecycle_log stop signalling "pid=$OBSERVE_LOCK_PID"
-observe_signal_locked_process TERM || exit 1
-if observe_wait_for_collector_release; then
+if [ "$OBSERVE_LOCK_RUNTIME" = docker ]; then
+  owner="container=$OBSERVE_LOCK_CONTAINER"
+else
+  owner="pid=$OBSERVE_LOCK_PID"
+fi
+observe_lifecycle_log stop signalling "$owner"
+observe_signal_locked_collector TERM || exit 1
+if observe_wait_for_collector_release "$(observe_shutdown_timeout_for "$OBSERVE_LOCK_RUNTIME")"; then
   observe_lifecycle_log stop stopped
   printf 'collector: stopped\n'
   exit 0

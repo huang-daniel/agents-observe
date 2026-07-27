@@ -15,7 +15,6 @@ import sessionsRouter from './routes/sessions'
 import agentsRouter from './routes/agents'
 import adminRouter from './routes/admin'
 import healthRouter from './routes/health'
-import consumerRouter from './routes/consumer'
 import callbacksRouter from './routes/callbacks'
 import notificationsRouter from './routes/notifications'
 import changelogRouter from './routes/changelog'
@@ -56,7 +55,6 @@ export function createApp(
   app.route('/api', agentsRouter)
   app.route('/api', adminRouter)
   app.route('/api', healthRouter)
-  app.route('/api', consumerRouter)
   app.route('/api', callbacksRouter)
   app.route('/api', notificationsRouter)
   app.route('/api', changelogRouter)

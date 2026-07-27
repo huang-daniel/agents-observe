@@ -67,18 +67,27 @@ observe_env_init "$data_root" || exit 2
 observe_collector_healthy
 rc=$?
 
+# A containerized collector is identified by its container, not by a PID that
+# belongs to another namespace and means nothing on this host.
+if [ "$OBSERVE_HEALTH_RUNTIME" = docker ]; then
+  owner="container=$OBSERVE_HEALTH_CONTAINER"
+else
+  owner="pid=$OBSERVE_HEALTH_PID"
+  [ -n "$OBSERVE_HEALTH_PID" ] || owner=
+fi
+
 case "$OBSERVE_HEALTH_STATUS" in
   healthy)
-    printf 'collector: healthy pid=%s heartbeat=%ss http=%s\n' \
-      "$OBSERVE_HEALTH_PID" "$OBSERVE_HEALTH_AGE" "$OBSERVE_HEALTH_HTTP"
+    printf 'collector: healthy %s heartbeat=%ss http=%s\n' \
+      "$owner" "$OBSERVE_HEALTH_AGE" "$OBSERVE_HEALTH_HTTP"
     ;;
   absent)
     printf 'collector: absent\n'
     ;;
   *)
-    if [ -n "$OBSERVE_HEALTH_PID" ]; then
-      printf 'collector: %s reason=%s pid=%s\n' \
-        "$OBSERVE_HEALTH_STATUS" "$OBSERVE_HEALTH_REASON" "$OBSERVE_HEALTH_PID"
+    if [ -n "$owner" ]; then
+      printf 'collector: %s reason=%s %s\n' \
+        "$OBSERVE_HEALTH_STATUS" "$OBSERVE_HEALTH_REASON" "$owner"
     else
       printf 'collector: %s reason=%s\n' "$OBSERVE_HEALTH_STATUS" "$OBSERVE_HEALTH_REASON"
     fi

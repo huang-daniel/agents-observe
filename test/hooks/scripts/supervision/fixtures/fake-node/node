@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# A stand-in for `node`, so the docker spawn path can be exercised without
+# actually starting a container. Records the invocation and the supervision env
+# the arm is expected to pass through to the CLI.
+set -u
+printf 'argv=%s instance=%s data-root=%s\n' \
+  "$*" "${AGENTS_OBSERVE_INSTANCE_ID:-}" "${AGENTS_OBSERVE_DATA_ROOT:-}" \
+  >> "${FAKE_NODE_LOG:-/dev/null}"

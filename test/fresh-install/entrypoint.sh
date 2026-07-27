@@ -59,11 +59,12 @@ echo "AGENTS_OBSERVE_TEST_SKIP_PULL=$AGENTS_OBSERVE_TEST_SKIP_PULL"
 echo ""
 
 # --- Set CLAUDE_PLUGIN_ROOT ---------------------------------------------
-# --plugin-dir loads the plugin's hooks.json AND its .mcp.json. The hook
-# commands reference ${CLAUDE_PLUGIN_ROOT} (bash expands it at exec
-# time), so the var must be in the environment when claude launches the
-# hook. Claude sets this automatically for installed plugins; for
-# --plugin-dir we set it ourselves so the commands resolve correctly.
+# --plugin-dir loads the plugin's hooks.json. The hook commands reference
+# ${CLAUDE_PLUGIN_ROOT} (bash expands it at exec time), so the var must be in
+# the environment when claude launches the hook. Claude sets this automatically
+# for installed plugins; for --plugin-dir we set it ourselves so the commands
+# resolve correctly. The hooks are the whole integration — there is no separate
+# launcher process to configure.
 export CLAUDE_PLUGIN_ROOT=/plugin
 echo "CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT"
 echo ""
@@ -111,8 +112,8 @@ echo "=== Running verification checks ==="
 CHECK_1_RESULT="FAIL"; CHECK_1_DETAIL=""
 CHECK_2_RESULT="FAIL"; CHECK_2_DETAIL=""
 CHECK_3_RESULT="FAIL"; CHECK_3_DETAIL=""
-CHECK_4_MCP_COUNT=0
 CHECK_4_CLI_COUNT=0
+SUPERVISION_STATUS="(not collected)"
 
 # Check 1: inner agents-observe container exists and is running
 CONTAINER_STATUS="$(docker ps -a --filter name=agents-observe --format '{{.Status}}' | head -1)"
@@ -146,15 +147,11 @@ else
   CHECK_3_DETAIL="empty response curl-err='$(cat /tmp/curl-sessions.err 2>/dev/null || true)'"
 fi
 
-# Check 4 (soft): grep ERROR lines in mcp.log and cli.log
+# Check 4 (soft): grep ERROR lines in cli.log
 # Scope to /plugin/data — the only place the current run writes logs.
 # A blanket `find /` also picks up stale logs baked into the image from
 # host-side worktrees, which pollutes counts and the diagnostic dump.
-MCP_LOG_FILES="$(find /plugin/data -type f -name 'mcp.log' 2>/dev/null)"
 CLI_LOG_FILES="$(find /plugin/data -type f -name 'cli.log' 2>/dev/null)"
-if [ -n "$MCP_LOG_FILES" ]; then
-  CHECK_4_MCP_COUNT="$(grep -c 'ERROR' $MCP_LOG_FILES 2>/dev/null | awk -F: '{s+=$NF} END {print s+0}')"
-fi
 if [ -n "$CLI_LOG_FILES" ]; then
   CHECK_4_CLI_COUNT="$(grep -c 'ERROR' $CLI_LOG_FILES 2>/dev/null | awk -F: '{s+=$NF} END {print s+0}')"
 fi
@@ -207,15 +204,20 @@ else
 fi
 echo ""
 
-echo "=== mcp.log ==="
-if [ -n "$MCP_LOG_FILES" ]; then
-  for f in $MCP_LOG_FILES; do
-    echo "--- $f ---"
-    cat "$f" || true
-  done
-else
-  echo "(no mcp.log files found)"
-fi
+# The collector's own account of itself: what the supervisor decided, and
+# whether events are draining out of the durable spool. This is where a
+# capture failure shows up first.
+echo "=== collector supervision ==="
+SUPERVISION_STATUS="$(/plugin/hooks/scripts/supervision/observe-health.sh 2>&1 || true)"
+echo "$SUPERVISION_STATUS"
+for root in /home/testuser/.agents-observe /root/.agents-observe; do
+  if [ -d "$root/runtime" ]; then
+    echo "--- $root/runtime ---"
+    find "$root/runtime" -maxdepth 3 2>/dev/null | head -40 || true
+    echo "--- $root/runtime/collector-lifecycle.log ---"
+    tail -n 40 "$root/runtime/collector-lifecycle.log" 2>/dev/null || true
+  fi
+done
 echo ""
 
 echo "=== cli.log ==="
@@ -256,8 +258,8 @@ echo "=== verification results ==="
 echo "1. Inner container exists: $CHECK_1_RESULT — $CHECK_1_DETAIL"
 echo "2. Server health:          $CHECK_2_RESULT — $CHECK_2_DETAIL"
 echo "3. Events captured:        $CHECK_3_RESULT — $CHECK_3_DETAIL"
-echo "4. mcp.log ERROR lines:    $CHECK_4_MCP_COUNT"
 echo "4. cli.log ERROR lines:    $CHECK_4_CLI_COUNT"
+   echo "   Collector supervision:  $SUPERVISION_STATUS"
 
 # Check 5 (soft): UI HTML loads and references valid assets
 CHECK_5_RESULT="SKIP"

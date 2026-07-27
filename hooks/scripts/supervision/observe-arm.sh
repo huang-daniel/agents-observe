@@ -10,10 +10,20 @@ usage() {
   printf 'Usage: observe-arm.sh <attach|start|restart>\n' >&2
 }
 
+# How the owner is named in output and in the ledger. A container's PID belongs
+# to another namespace, so reporting it would name a process that is not there.
+owner_label() {
+  if [ "${OBSERVE_LOCK_RUNTIME:-local}" = docker ]; then
+    printf 'container=%s' "$OBSERVE_LOCK_CONTAINER"
+  else
+    printf 'pid=%s' "$OBSERVE_LOCK_PID"
+  fi
+}
+
 report_attached() {
   observe_collector_lock_snapshot >/dev/null || return 1
-  observe_lifecycle_log attach attached "pid=$OBSERVE_LOCK_PID instance=$OBSERVE_LOCK_INSTANCE_ID"
-  printf 'collector: attached pid=%s instance=%s\n' "$OBSERVE_LOCK_PID" "$OBSERVE_LOCK_INSTANCE_ID"
+  observe_lifecycle_log attach attached "$(owner_label) instance=$OBSERVE_LOCK_INSTANCE_ID"
+  printf 'collector: attached %s instance=%s\n' "$(owner_label)" "$OBSERVE_LOCK_INSTANCE_ID"
 }
 
 attach() {
@@ -31,7 +41,7 @@ attach() {
 }
 
 start() {
-  local spawned rc
+  local spawned rc runtime
   if observe_collector_healthy; then
     report_attached
     return 0
@@ -57,6 +67,8 @@ start() {
   fi
   [ "$rc" -eq 2 ] && return 2
 
+  runtime=$(observe_resolved_runtime)
+
   if [ -d "$OBSERVE_LOCK" ]; then
     if observe_collector_lock_is_abandoned; then
       observe_collector_lock_reclaim || {
@@ -73,29 +85,29 @@ start() {
   fi
 
   spawned=$(observe_spawn_collector) || {
-    observe_lifecycle_log start spawn-failed
+    observe_lifecycle_log start spawn-failed "runtime=$runtime"
     return 1
   }
-  observe_lifecycle_log start spawned "pid=$spawned"
-  if observe_wait_for_spawned_collector "$spawned"; then
+  observe_lifecycle_log start spawned "runtime=$runtime owner=$spawned"
+  if observe_wait_for_spawned_collector "$spawned" "$runtime"; then
     observe_collector_lock_snapshot >/dev/null
-    observe_lifecycle_log start started "pid=$OBSERVE_LOCK_PID instance=$OBSERVE_LOCK_INSTANCE_ID"
-    printf 'collector: started pid=%s instance=%s\n' "$OBSERVE_LOCK_PID" "$OBSERVE_LOCK_INSTANCE_ID"
+    observe_lifecycle_log start started "$(owner_label) instance=$OBSERVE_LOCK_INSTANCE_ID"
+    printf 'collector: started %s instance=%s\n' "$(owner_label)" "$OBSERVE_LOCK_INSTANCE_ID"
     return 0
   fi
 
-  observe_lifecycle_log start confirmation-timeout "pid=$spawned"
-  printf 'collector: failed to confirm spawned collector pid=%s healthy\n' "$spawned" >&2
+  observe_lifecycle_log start confirmation-timeout "runtime=$runtime owner=$spawned"
+  printf 'collector: failed to confirm spawned collector owner=%s healthy\n' "$spawned" >&2
   return 1
 }
 
 restart() {
   if [ -d "$OBSERVE_LOCK" ]; then
-    if observe_process_matches_lock; then
+    if observe_owner_matches_lock; then
       observe_collector_lock_snapshot >/dev/null
-      observe_lifecycle_log restart signalling "pid=$OBSERVE_LOCK_PID"
-      observe_signal_locked_process TERM || return 1
-      if ! observe_wait_for_collector_release; then
+      observe_lifecycle_log restart signalling "$(owner_label)"
+      observe_signal_locked_collector TERM || return 1
+      if ! observe_wait_for_collector_release "$(observe_shutdown_timeout_for "$OBSERVE_LOCK_RUNTIME")"; then
         observe_lifecycle_log restart shutdown-timeout
         printf 'collector: timed out waiting for owner to release lock\n' >&2
         return 1

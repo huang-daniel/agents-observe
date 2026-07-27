@@ -36,7 +36,7 @@ claude plugin marketplace add simple10/agents-observe
 claude plugin install agents-observe
 
 # Then just run claude
-# The plugin will auto start the MCP server and capture events
+# The plugin's hooks capture events and start the server on demand
 claude
 
 # Use the /observe skill in claude to check status, restart the server, etc.
@@ -82,13 +82,25 @@ location. See `<root>/data/.migrated-from.json` for the record.
 
 ## Prerequisites
 
-- [Docker](https://www.docker.com/) — the server runs as a container
+- [Docker](https://www.docker.com/) — a plugin install runs the server as a container
 - [Node.js](https://nodejs.org/) — hook scripts run via `node`
-- Bash - hooks are configured to use `hooks.sh` for fast fire and forget event logging
+- Bash - hooks are configured to use `hook.sh` for fast fire and forget event logging
 
 If docker, node, or bash are not installed on your host, the plugin will fail to properly load.
 
 Use the `/observe debug` claude command to help troubleshoot and fix installation issues.
+
+### How the server starts
+
+There is no separate launcher process. Every hook writes its event to a durable
+on-disk spool and then, only when the collector is not healthy, arms the
+supervisor that starts it — one mechanism, shared by Claude Code and Codex. A
+plugin install has no server dependencies to run locally, so the supervisor
+starts the Docker container and supervises it by container identity; a checkout
+with `just install` run supervises a local Node process instead. Either way the
+first events of a session are spooled and delivered once the collector is up, so
+nothing is lost while it starts. See
+[docs/collector-supervision.md](./docs/collector-supervision.md).
 
 ## Plugin Skills
 
@@ -100,9 +112,9 @@ Use the `/observe debug` claude command to help troubleshoot and fix installatio
 | `/observe status` | Show server health, version, runtime, and config details |
 | `/observe start` | Start the server |
 | `/observe stop` | Stop the server |
-| `/observe restart` | Restart the MCP server |
+| `/observe restart` | Restart the server |
 | `/observe logs` | Show recent Docker container logs |
-| `/observe debug` | Diagnose server issues (health, docker logs, mcp.log, cli.log) |
+| `/observe debug` | Diagnose server issues (health, docker logs, collector supervision, cli.log) |
 
 ## Why observability matters
 
@@ -206,7 +218,7 @@ just fmt          # Format all source files
 
 # Server (Docker):
 just build        # Build the Docker image locally
-just start        # Start the server (same path as plugin MCP)
+just start        # Start the server (the same path the hooks' supervisor uses)
 just stop         # Stop the server
 just restart      # Restart the server
 just logs         # Follow Docker container logs
@@ -228,14 +240,13 @@ app/
   client/                    # React 19 + shadcn dashboard
 hooks/
   hooks.json                 # Plugin hook definitions
-  scripts/                   # CLI, MCP server, and shared libs
+  scripts/                   # Hook entrypoint, CLI, supervision, and shared libs
 skills/                      # /observe skills
 scripts/                     # Release tooling
 test/                        # Integration tests
 docs/                        # Plans and demo assets
 .claude-plugin/              # Plugin + marketplace manifests
 .env                         # Env config options used by cli & local server
-.mcp.json                    # MCP server configuration
 Dockerfile                   # Production container image
 docker-compose.yml           # Container orchestration - not used by the plugin
 justfile                     # Task runner commands
@@ -272,7 +283,7 @@ The server auto-assigns a free port if 4981 is taken. To explicitly set a port, 
 
 **Plugin not capturing events?**
 
-Run `/observe debug` to diagnose. It checks server health, Docker container logs, MCP logs, and CLI logs. You can also run `/observe status` for a quick health check.
+Run `/observe debug` to diagnose. It checks server health, collector supervision, Docker container logs, and CLI logs. You can also run `/observe status` for a quick health check.
 
 **Events not appearing in the dashboard?**
 

@@ -16,6 +16,7 @@ import { validateEnvelope } from '../parser'
 import type { EventStore } from '../storage/types'
 import { DuplicateSpoolEventIdError } from '../storage/types'
 import { resolveProject } from '../services/project-resolver'
+import { endAgentSession, noteAgentActivity } from '../consumer-tracker'
 import { runtimePaths } from './paths'
 
 interface RawHookEntry {
@@ -109,6 +110,15 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
     const timestamp = normalized.timestamp
     const sessionHints = envelope._meta?.session
     const agentHints = envelope._meta?.agent
+    // A session that is producing events counts as a consumer, so the idle
+    // auto-shutdown cannot pull the collector out from under a working agent
+    // that has no dashboard tab open. See consumer-tracker.ts.
+    if (envelope.hookName === 'SessionEnd') {
+      endAgentSession(envelope.sessionId)
+    } else {
+      noteAgentActivity(envelope.sessionId)
+    }
+
     const sessionBefore = await options.store.getSessionById(envelope.sessionId)
     await options.store.upsertSession(
       envelope.sessionId,
