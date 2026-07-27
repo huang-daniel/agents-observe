@@ -117,6 +117,64 @@ describe('spool consumer', () => {
     })
   })
 
+  it.each(['claude-code', 'codex'])(
+    'broadcasts committed %s spool events and stopped-session state live',
+    async (agentClass) => {
+      const root = makeDataRoot(`spool-live-${agentClass}`)
+      roots.push(root)
+      const store = new SqliteAdapter(':memory:')
+      const pending = join(runtimePaths(root).spoolDir, 'pending')
+      mkdirSync(pending, { recursive: true })
+      writeFileSync(
+        join(pending, `${agentClass}-end.json`),
+        JSON.stringify({
+          timestamp: 1_700_000_000_000,
+          envelope: {
+            agentId: `${agentClass}-agent`,
+            sessionId: `${agentClass}-session`,
+            hookName: 'SessionEnd',
+            agentClass,
+            flags: { stopsSession: true },
+            payload: {},
+          },
+        }),
+      )
+      const sessionBroadcasts: Array<{ sessionId: string; message: any }> = []
+      const activities: Array<{ sessionId: string; eventId: number; projectId: number | null }> = []
+      const allBroadcasts: any[] = []
+
+      const consumer = createSpoolConsumer({
+        dataRoot: root,
+        store,
+        broadcastToSession: (sessionId, message) => sessionBroadcasts.push({ sessionId, message }),
+        broadcastActivity: (sessionId, eventId, projectId) =>
+          activities.push({ sessionId, eventId, projectId }),
+        broadcastToAll: (message) => allBroadcasts.push(message),
+      })
+      await consumer.consumeOnce()
+
+      expect(sessionBroadcasts).toEqual([
+        expect.objectContaining({
+          sessionId: `${agentClass}-session`,
+          message: expect.objectContaining({ type: 'event' }),
+        }),
+      ])
+      expect(activities).toEqual([
+        expect.objectContaining({
+          sessionId: `${agentClass}-session`,
+          eventId: expect.any(Number),
+        }),
+      ])
+      expect(allBroadcasts).toContainEqual({
+        type: 'session_update',
+        data: { id: `${agentClass}-session`, status: 'stopped' },
+      })
+      expect((await store.getSessionById(`${agentClass}-session`)).stopped_at).toEqual(
+        expect.any(Number),
+      )
+    },
+  )
+
   it('moves repeatedly failing entries to failed and keeps consuming', async () => {
     const root = makeDataRoot('spool-failed')
     roots.push(root)

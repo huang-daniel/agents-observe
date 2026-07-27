@@ -119,5 +119,6 @@ release version:
 
 # Install all dependencies
 install:
+    npm install
     cd {{ server }} && npm install
     cd {{ client }} && npm install

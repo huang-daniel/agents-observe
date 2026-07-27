@@ -11,10 +11,11 @@ import {
   readFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import type { EventEnvelope } from '../types'
+import type { EventEnvelope, ParsedEvent } from '../types'
 import { validateEnvelope } from '../parser'
 import type { EventStore } from '../storage/types'
 import { DuplicateSpoolEventIdError } from '../storage/types'
+import { resolveProject } from '../services/project-resolver'
 import { runtimePaths } from './paths'
 
 interface RawHookEntry {
@@ -37,6 +38,9 @@ export interface SpoolConsumerOptions {
   maxAttempts?: number
   pollIntervalMs?: number
   onStats?: (stats: SpoolStats) => void
+  broadcastToSession?: (sessionId: string, message: object) => void
+  broadcastToAll?: (message: object) => void
+  broadcastActivity?: (sessionId: string, eventId: number, projectId: number | null) => void
 }
 
 interface SpoolEntry {
@@ -105,15 +109,28 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
     const timestamp = normalized.timestamp
     const sessionHints = envelope._meta?.session
     const agentHints = envelope._meta?.agent
+    const sessionBefore = await options.store.getSessionById(envelope.sessionId)
     await options.store.upsertSession(
       envelope.sessionId,
-      null,
+      sessionBefore?.project_id ?? null,
       sessionHints?.slug ?? null,
       sessionHints?.metadata ?? null,
       timestamp,
       sessionHints?.transcriptPath ?? null,
       sessionHints?.startCwd ?? null,
     )
+    const session = await options.store.getSessionById(envelope.sessionId)
+    const resolvedProjectId = await resolveProject(options.store, {
+      sessionId: envelope.sessionId,
+      meta: envelope._meta?.project,
+      flags: envelope.flags,
+      startCwd: session?.start_cwd ?? null,
+      transcriptPath: session?.transcript_path ?? null,
+      currentProjectId: session?.project_id ?? null,
+    })
+    if (resolvedProjectId !== null && resolvedProjectId !== session?.project_id) {
+      await options.store.updateSessionProject(envelope.sessionId, resolvedProjectId)
+    }
     await options.store.upsertAgent(
       envelope.agentId,
       envelope.sessionId,
@@ -124,7 +141,7 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
       envelope.agentClass,
     )
     try {
-      await options.store.insertEvent({
+      const inserted = await options.store.insertEvent({
         agentId: envelope.agentId,
         sessionId: envelope.sessionId,
         hookName: envelope.hookName,
@@ -134,6 +151,57 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
         _meta: (envelope._meta as Record<string, unknown> | undefined) ?? null,
         spoolEventId: eventId,
       })
+      const flags = envelope.flags ?? {}
+      const wasPending = session?.pending_notification_ts ?? null
+      let pendingTransition: 'set' | 'cleared' | 'none' = 'none'
+      if (flags.clearsNotification) {
+        await options.store.clearSessionNotification(envelope.sessionId)
+        if (wasPending !== null) pendingTransition = 'cleared'
+      }
+      if (flags.startsNotification) {
+        await options.store.startSessionNotification(envelope.sessionId, timestamp)
+        if (wasPending === null || pendingTransition === 'cleared') pendingTransition = 'set'
+      }
+      if (flags.stopsSession) {
+        await options.store.stopSession(envelope.sessionId, timestamp)
+      }
+
+      const event: ParsedEvent = {
+        id: inserted.eventId,
+        agentId: envelope.agentId,
+        sessionId: envelope.sessionId,
+        hookName: envelope.hookName,
+        timestamp,
+        cwd: envelope.cwd ?? null,
+        _meta: (envelope._meta as Record<string, unknown> | undefined) ?? null,
+        payload: envelope.payload,
+      }
+      options.broadcastToSession?.(envelope.sessionId, { type: 'event', data: event })
+      const broadcastProjectId =
+        resolvedProjectId ?? (session?.project_id as number | null | undefined) ?? null
+      options.broadcastActivity?.(envelope.sessionId, inserted.eventId, broadcastProjectId)
+      if (flags.stopsSession) {
+        options.broadcastToAll?.({
+          type: 'session_update',
+          data: { id: envelope.sessionId, status: 'stopped' },
+        })
+      }
+      if (pendingTransition === 'set') {
+        const sessionAfter = await options.store.getSessionById(envelope.sessionId)
+        options.broadcastToAll?.({
+          type: 'notification',
+          data: {
+            sessionId: envelope.sessionId,
+            projectId: resolvedProjectId ?? sessionAfter?.project_id ?? null,
+            ts: timestamp,
+          },
+        })
+      } else if (pendingTransition === 'cleared') {
+        options.broadcastToAll?.({
+          type: 'notification_clear',
+          data: { sessionId: envelope.sessionId, ts: timestamp },
+        })
+      }
     } catch (error) {
       if (error instanceof DuplicateSpoolEventIdError) return
       throw error

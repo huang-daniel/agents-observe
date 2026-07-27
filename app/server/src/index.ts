@@ -78,6 +78,9 @@ const spoolConsumer = createSpoolConsumer({
   dataRoot: supervision.paths.dataRoot,
   store,
   onStats: (stats) => supervision.setSpoolStats(stats),
+  broadcastToSession,
+  broadcastToAll,
+  broadcastActivity,
 })
 spoolConsumer.start()
 // Only now can the heartbeat answer what it reports on.
