@@ -265,7 +265,8 @@ source of ownership truth.
   predicate succeeds for the run it launched (including the optional HTTP health
   leg): the spawned PID, or the instance id it generated and labelled the
   container with before starting it.
-- `restart` sends `TERM` through `observe_signal_locked_process`, waits for the
+- `restart` sends `TERM` through `observe_signal_locked_collector` — `kill` in
+  the `local` runtime, `docker stop` in the `docker` one — waits for the
   collector to release both its lock and heartbeat, then follows `start`. With
   no live owner it is simply `start`.
 - `observe-stop.sh` likewise signals only an identity-matched owner and waits

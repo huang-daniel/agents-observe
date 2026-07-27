@@ -118,6 +118,7 @@ the second exits `3`. Give each a different `AGENTS_OBSERVE_DATA_ROOT` (or
 | --- | --- | --- |
 | `AGENTS_OBSERVE_COLLECTOR_ENTRYPOINT` | *(empty)* | Optional executable the supervisor arm starts instead of the bundled Node entrypoint. Primarily useful for integration harnesses. |
 | `AGENTS_OBSERVE_COLLECTOR_RUNTIME` | `auto` | Which runtime the collector is supervised as: `local` (a host process) or `docker` (the managed container). `auto` picks `local` when `app/server/node_modules` exists and `docker` otherwise. See [collector-supervision.md](./collector-supervision.md#two-collector-runtimes). |
+| `AGENTS_OBSERVE_COLLECTOR_CONTAINER` | *(empty)* | Internal: the container's own name, passed in because a container cannot discover it. Set by `getServerEnv()`/docker-compose, not by users — see `AGENTS_OBSERVE_DOCKER_CONTAINER_NAME` above to change the name itself. |
 | `AGENTS_OBSERVE_DOCKER_INSTANCE_LABEL` | `simple10-agents-observe.instance` | Label the container carries its collector instance id under. Reading it back is how the host proves a running container is *this* collector run. |
 | `AGENTS_OBSERVE_DOCKER_START_TIMEOUT` | `180` | Seconds the supervisor waits for a container start to confirm healthy. Larger than the local timeout because a first start pulls an image. |
 | `AGENTS_OBSERVE_DOCKER_STOP_TIMEOUT` | `10` | Seconds `docker stop` gives the collector to shut down gracefully before killing it. |
