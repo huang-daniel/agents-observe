@@ -3,7 +3,7 @@
 // command uses in production.
 
 import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -15,6 +15,7 @@ import {
   runShell,
   spawnFakeProcess,
   killProcess,
+  waitFor,
 } from './helpers.mjs'
 
 const execFileAsync = promisify(execFile)
@@ -24,6 +25,10 @@ const STOP = join(SUPERVISION_DIR, 'observe-stop.sh')
 const FAKE_COLLECTOR = join(
   SUPERVISION_DIR,
   '../../../test/hooks/scripts/supervision/fixtures/fake-collector.sh',
+)
+const PHASE_COLLECTOR = join(
+  SUPERVISION_DIR,
+  '../../../test/hooks/scripts/supervision/fixtures/phase-collector.sh',
 )
 
 const roots = []
@@ -39,7 +44,7 @@ async function freePort() {
   })
 }
 
-async function command(script, args, root, port) {
+async function command(script, args, root, port, overrides = {}) {
   const env = {
     ...process.env,
     AGENTS_OBSERVE_DATA_ROOT: root,
@@ -54,6 +59,7 @@ async function command(script, args, root, port) {
     AGENTS_OBSERVE_START_POLL: '0.05',
     AGENTS_OBSERVE_LOG_LEVEL: 'error',
     AGENTS_OBSERVE_COLLECTOR_ENTRYPOINT: FAKE_COLLECTOR,
+    ...overrides,
   }
   try {
     const { stdout, stderr } = await execFileAsync(script, args, { env })
@@ -102,6 +108,9 @@ describe('observe-arm.sh', () => {
   it('serializes concurrent starts through the start lock', async () => {
     const { root, entry } = fixture()
     entry.port = await freePort()
+    // This is intentionally a live integration race: only independent arm
+    // processes can verify that the kernel's O_EXCL start-lock claim lets one
+    // invocation start and makes its peer attach.
     const [a, b] = await Promise.all([start(root, entry.port), start(root, entry.port)])
 
     expect(a.code, a.stderr).toBe(0)
@@ -110,6 +119,78 @@ describe('observe-arm.sh', () => {
     expect((outputs.match(/collector: started/g) ?? []).length).toBe(1)
     expect((outputs.match(/collector: attached/g) ?? []).length).toBe(1)
   }, 30_000)
+
+  it('rejects a reused PID as unsafe instead of spawning over it', async () => {
+    const { root, entry } = fixture()
+    entry.port = await freePort()
+    const original = spawnFakeProcess(MARKER)
+    const claimed = await runShell(
+      `observe_runtime_ensure && observe_collector_lock_claim 'old-instance' ${original.pid}`,
+      { dataRoot: root },
+    )
+    expect(claimed.code).toBe(0)
+    const lockDir = `${root}/runtime/collector.lock`
+    const identity = readFileSync(`${lockDir}/pid-identity`, 'utf8')
+    killProcess(original)
+
+    const unrelated = spawnFakeProcess()
+    writeFileSync(`${lockDir}/pid`, `${unrelated.pid}\n`)
+    writeFileSync(`${lockDir}/pid-identity`, identity.replace(/^pid=\d+/, `pid=${unrelated.pid}`))
+
+    const result = await start(root, entry.port)
+    expect(result.code).toBe(2)
+    expect(result.stdout).toBe('')
+    expect(readFileSync(`${lockDir}/instance-id`, 'utf8')).toBe('old-instance\n')
+    killProcess(unrelated)
+  }, 30_000)
+
+  it('does not replace a live owner merely because its heartbeat is stale', async () => {
+    const { root, entry } = fixture()
+    entry.port = await freePort()
+    const owner = spawnFakeProcess(MARKER)
+    const setup = await runShell(
+      `observe_runtime_ensure && observe_collector_lock_claim 'wedged-instance' ${owner.pid} && observe_heartbeat_publish 'wedged-instance' ${owner.pid}`,
+      { dataRoot: root },
+    )
+    expect(setup.code).toBe(0)
+    writeFileSync(
+      `${root}/runtime/collector.heartbeat`,
+      `instanceId=wedged-instance\npid=${owner.pid}\nupdatedAt=1\n`,
+    )
+
+    const result = await start(root, entry.port)
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain('live or unsafe owner remains')
+    expect(readFileSync(`${root}/runtime/collector.lock/instance-id`, 'utf8')).toBe(
+      'wedged-instance\n',
+    )
+    killProcess(owner)
+  }, 30_000)
+
+  for (const phase of ['before-lock', 'after-lock', 'after-heartbeat']) {
+    it(`recovers after a collector is killed ${phase.replace('-', ' ')}`, async () => {
+      const { root, entry } = fixture()
+      entry.port = await freePort()
+      const ready = `${root}/runtime/phase-collector.pid`
+      const failedStart = command(ARM, ['start'], root, entry.port, {
+        AGENTS_OBSERVE_COLLECTOR_ENTRYPOINT: PHASE_COLLECTOR,
+        AGENTS_OBSERVE_TEST_COLLECTOR_PHASE: phase,
+        AGENTS_OBSERVE_START_TIMEOUT: '1',
+        AGENTS_OBSERVE_START_POLL: '0.02',
+      })
+      await waitFor(() => existsSync(ready))
+      process.kill(Number(readFileSync(ready, 'utf8').trim()), 'SIGKILL')
+      const failed = await failedStart
+
+      expect(failed.code).toBe(1)
+      if (phase === 'before-lock') expect(existsSync(`${root}/runtime/collector.lock`)).toBe(false)
+      else expect(existsSync(`${root}/runtime/collector.lock`)).toBe(true)
+
+      const recovered = await start(root, entry.port)
+      expect(recovered.code, recovered.stderr).toBe(0)
+      expect(recovered.stdout).toContain('collector: started')
+    }, 30_000)
+  }
 
   it('reclaims a lock whose owner is provably dead before starting', async () => {
     const { root, entry } = fixture()

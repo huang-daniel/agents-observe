@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { makeDataRoot, removeDataRoot, runShell } from './helpers.mjs'
 
 const roots = []
@@ -36,5 +37,65 @@ describe('observe-spool.sh', () => {
     expect(result.code).toBe(0)
     expect(existsSync(join(root, 'runtime/spool/failed/event-2.json'))).toBe(true)
     expect(existsSync(join(root, 'runtime/spool/pending/event-2.json'))).toBe(false)
+  })
+
+  it('keeps identical event ids and state transitions isolated by data root', async () => {
+    const first = makeDataRoot('observe-spool-a')
+    const second = makeDataRoot('observe-spool-b')
+    roots.push(first, second)
+
+    expect(
+      (
+        await runShell('printf \'{"root":"a"}\' | observe_spool_write shared', {
+          dataRoot: first,
+          lib: '../observe-spool.sh',
+        })
+      ).code,
+    ).toBe(0)
+    expect(
+      (
+        await runShell('printf \'{"root":"b"}\' | observe_spool_write shared', {
+          dataRoot: second,
+          lib: '../observe-spool.sh',
+        })
+      ).code,
+    ).toBe(0)
+    await runShell('observe_spool_move shared pending processing', {
+      dataRoot: first,
+      lib: '../observe-spool.sh',
+    })
+
+    expect(existsSync(join(first, 'runtime/spool/processing/shared.json'))).toBe(true)
+    expect(existsSync(join(second, 'runtime/spool/pending/shared.json'))).toBe(true)
+    expect(
+      JSON.parse(readFileSync(join(second, 'runtime/spool/pending/shared.json'), 'utf8')),
+    ).toMatchObject({
+      envelope: { root: 'b' },
+    })
+  })
+
+  it('fails safely when the filesystem rejects the final spool publish', async () => {
+    // A PATH fake is deterministic and models ENOSPC at the atomic publish
+    // boundary without depending on the host's remaining disk capacity.
+    const root = makeDataRoot('observe-spool-full')
+    roots.push(root)
+    const fakeBin = mkdtempSync(join(tmpdir(), 'observe-spool-bin-'))
+    try {
+      const ln = join(fakeBin, 'ln')
+      writeFileSync(ln, '#!/usr/bin/env bash\nexit 1\n', { mode: 0o755 })
+      const result = await runShell('printf \'{"hello":true}\' | observe_spool_write no-space', {
+        dataRoot: root,
+        lib: '../observe-spool.sh',
+        env: { PATH: `${fakeBin}:${process.env.PATH}` },
+      })
+
+      expect(result.code).toBe(1)
+      const pending = join(root, 'runtime/spool/pending')
+      expect(existsSync(join(pending, 'no-space.json'))).toBe(false)
+      expect(existsSync(join(pending, '.no-space.tmp'))).toBe(false)
+      expect(readdirSync(pending)).toEqual([])
+    } finally {
+      rmSync(fakeBin, { recursive: true, force: true })
+    }
   })
 })
