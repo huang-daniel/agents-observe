@@ -1,4 +1,5 @@
 import type { RawEvent } from '../types'
+import { extractResultText } from '../shared/result-text'
 
 const SUMMARY_MAX = 240
 
@@ -140,10 +141,5 @@ export function buildSearchText(event: RawEvent, summary: string, toolName: stri
 
 export function getResultSummary(payload: Record<string, unknown>): string {
   const response = record(payload.tool_response)
-  return (
-    oneLine(
-      response.stdout ?? response.stderr ?? response.output ?? response.content ?? response.error,
-      SUMMARY_MAX,
-    ) || compactJson(response, SUMMARY_MAX)
-  )
+  return oneLine(extractResultText(response), SUMMARY_MAX) || compactJson(response, SUMMARY_MAX)
 }

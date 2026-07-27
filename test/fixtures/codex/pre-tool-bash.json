@@ -1,0 +1,1 @@
+{"session_id":"codex-session-1","agent_id":"codex-session-1","hook_event_name":"PreToolUse","turn_id":"turn-01","tool_use_id":"toolu-bash-01","tool_name":"Bash","tool_input":{"command":"git status --short","timeout_ms":10000},"cwd":"/workspace/app"}

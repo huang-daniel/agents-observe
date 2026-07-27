@@ -1,0 +1,1 @@
+{"session_id":"codex-session-1","agent_id":"codex-session-1","hook_event_name":"PostToolUse","turn_id":"turn-01","tool_use_id":"toolu-bash-02","tool_name":"Bash","tool_input":{"command":"false"},"tool_response":{"stdout":"","stderr":"command failed","exit_code":1}}

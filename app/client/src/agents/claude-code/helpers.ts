@@ -1,6 +1,7 @@
 // Claude Code agent class — summary generation and utility helpers.
 
 import type { RawEvent } from '../types'
+import { truncateSummary } from '../shared/failure-detection'
 
 /** Extract the binary/command name from a bash command string. */
 // Valid binary name: alphanumeric, hyphens, dots, underscores — no shell special chars
@@ -178,7 +179,7 @@ function usableSummary(s: unknown): s is string {
  *  fix workflows), then any string scalar, then a per-field breakdown.
  *  Truncated to keep the duplicated copies small. */
 function structuredOutputSummary(toolInput: Record<string, any>): string {
-  return truncate(rawStructuredOutputSummary(toolInput), STRUCTURED_OUTPUT_SUMMARY_MAX)
+  return truncateSummary(rawStructuredOutputSummary(toolInput), STRUCTURED_OUTPUT_SUMMARY_MAX)
 }
 
 function rawStructuredOutputSummary(toolInput: Record<string, any>): string {
@@ -215,22 +216,6 @@ function describeField(key: string, value: unknown): string {
   }
   if (value === null || value === undefined) return key
   return `${key}: ${value}`
-}
-
-/** A summary that carries no real information: empty, too short, or a
- *  synthesized field-breakdown placeholder (anything wrapped in guillemets,
- *  e.g. `‹findings: 8›`). Used to decide whether a tool failure should
- *  overwrite the row summary with its error. Tests `startsWith` rather than a
- *  full match so a truncated placeholder is still recognized. */
-export function isWeakSummary(s: string | undefined | null): boolean {
-  if (!s) return true
-  const t = s.trim()
-  return t.length < 3 || t.startsWith('‹')
-}
-
-/** Truncate with an ellipsis when over `max` characters. */
-export function truncate(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max) + '...' : s
 }
 
 function getToolSummary(

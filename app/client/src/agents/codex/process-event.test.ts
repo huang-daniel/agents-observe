@@ -1,7 +1,31 @@
 import { describe, expect, test } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 import { compileFilters } from '@/lib/filters/compile'
 import type { ProcessingContext } from '../types'
 import { processEvent } from './process-event'
+import { processEvent as processClaudeEvent } from '../claude-code/process-event'
+
+const fixturesDir = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../../../../test/fixtures/codex',
+)
+
+function fixture(name: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(path.join(fixturesDir, `${name}.json`), 'utf8'))
+}
+
+function rawFixture(id: number, name: string) {
+  const payload = fixture(name)
+  return {
+    id,
+    agentId: String(payload.agent_id),
+    hookName: String(payload.hook_event_name),
+    timestamp: id,
+    payload,
+  }
+}
 
 function context(overrides: Partial<ProcessingContext> = {}): ProcessingContext {
   return {
@@ -24,6 +48,95 @@ function context(overrides: Partial<ProcessingContext> = {}): ProcessingContext 
 }
 
 describe('Codex processEvent', () => {
+  test('normalizes every installed Codex lifecycle fixture', () => {
+    const names = [
+      'session-start',
+      'user-prompt-submit',
+      'pre-tool-bash',
+      'post-tool-bash-success',
+      'post-tool-bash-failure',
+      'permission-request',
+      'pre-compact',
+      'post-compact',
+      'subagent-start',
+      'subagent-stop',
+      'stop',
+      'session-end',
+    ]
+    for (const [index, name] of names.entries()) {
+      const event = processEvent(rawFixture(index + 1, name), context()).event
+      expect(event.label).not.toBe('')
+      expect(event.iconId).not.toBe('Default')
+    }
+  })
+
+  test('matches Claude for shared action semantics', () => {
+    const codexPre = processEvent(rawFixture(1, 'pre-tool-bash'), context()).event
+    const claudePre = processClaudeEvent(
+      {
+        id: 1,
+        agentId: 'claude-session-1',
+        hookName: 'PreToolUse',
+        timestamp: 1,
+        payload: {
+          tool_name: 'Bash',
+          tool_use_id: 'toolu-claude-1',
+          tool_input: { command: 'git status --short' },
+        },
+      },
+      context(),
+    ).event
+    expect(codexPre).toMatchObject({
+      label: claudePre.label,
+      iconId: claudePre.iconId,
+      status: 'running',
+    })
+    expect(codexPre.groupId).toBeTruthy()
+
+    const codexStop = processEvent(rawFixture(2, 'stop'), context()).event
+    const claudeStop = processClaudeEvent(
+      { id: 2, agentId: 'claude-session-1', hookName: 'Stop', timestamp: 2, payload: {} },
+      context(),
+    ).event
+    expect(codexStop).toMatchObject({ label: claudeStop.label, iconId: claudeStop.iconId })
+
+    const codexEnd = processEvent(rawFixture(3, 'session-end'), context()).event
+    const claudeEnd = processClaudeEvent(
+      { id: 3, agentId: 'claude-session-1', hookName: 'SessionEnd', timestamp: 3, payload: {} },
+      context(),
+    ).event
+    expect(codexEnd).toMatchObject({ label: claudeEnd.label, iconId: claudeEnd.iconId })
+
+    const equivalents = [
+      ['user-prompt-submit', 'UserPromptSubmit', {}, 'completed'],
+      ['post-tool-bash-success', 'PostToolUse', { tool_name: 'Bash' }, 'completed'],
+      ['post-tool-bash-failure', 'PostToolUseFailure', { tool_name: 'Bash' }, 'failed'],
+      ['pre-compact', 'PreCompact', {}, 'running'],
+      ['post-compact', 'PostCompact', {}, 'completed'],
+      ['subagent-start', 'SubagentStart', {}, 'running'],
+      ['subagent-stop', 'SubagentStop', {}, 'completed'],
+    ] as const
+    for (const [fixtureName, claudeHook, claudePayload, status] of equivalents) {
+      const codex = processEvent(rawFixture(10, fixtureName), context()).event
+      const claude = processClaudeEvent(
+        {
+          id: 10,
+          agentId: 'claude-session-1',
+          hookName: claudeHook,
+          timestamp: 10,
+          payload: claudePayload,
+        },
+        context(),
+      ).event
+      expect(codex).toMatchObject({
+        label: claude.label,
+        iconId: claude.iconId,
+        status,
+        displayEventStream: true,
+        displayTimeline: true,
+      })
+    }
+  })
   test('pairs native tool_use_id rows and merges successful output into the pre-event', () => {
     const pre = processEvent(
       {
