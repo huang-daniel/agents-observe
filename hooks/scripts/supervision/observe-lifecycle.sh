@@ -42,11 +42,23 @@ observe_lifecycle_release_start_lock() {
 }
 
 observe_spawn_collector() { # prints spawned PID
-  local entrypoint
+  local entrypoint data_dir db_path client_dist_path
   [ -d "$OBSERVE_ROOT/app/server" ] || return 1
+
+  # The hook runs this shell arm directly, bypassing config.mjs's
+  # getServerEnv(). Keep the local server's state beside the supervision
+  # runtime and retain the local-mode loopback default.
+  data_dir="$OBSERVE_DATA_ROOT/data"
+  db_path=${AGENTS_OBSERVE_DB_PATH:-"$data_dir/observe.db"}
+  client_dist_path=${AGENTS_OBSERVE_CLIENT_DIST_PATH:-"$OBSERVE_ROOT/app/client/dist"}
+  mkdir -p "$data_dir" || return 1
 
   (
     cd "$OBSERVE_ROOT/app/server" || exit 1
+    export AGENTS_OBSERVE_LOCAL_DATA_ROOT="${AGENTS_OBSERVE_LOCAL_DATA_ROOT:-$OBSERVE_DATA_ROOT}"
+    export AGENTS_OBSERVE_DB_PATH="$db_path"
+    export AGENTS_OBSERVE_CLIENT_DIST_PATH="$client_dist_path"
+    export AGENTS_OBSERVE_BIND_HOST="${AGENTS_OBSERVE_BIND_HOST:-127.0.0.1}"
     if [ -n "$OBSERVE_COLLECTOR_ENTRYPOINT" ]; then
       entrypoint=$OBSERVE_COLLECTOR_ENTRYPOINT
       [ -x "$entrypoint" ] || {
