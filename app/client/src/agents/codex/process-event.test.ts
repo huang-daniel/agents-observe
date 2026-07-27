@@ -113,8 +113,6 @@ describe('Codex processEvent', () => {
       ['post-tool-bash-failure', 'PostToolUseFailure', { tool_name: 'Bash' }, 'failed'],
       ['pre-compact', 'PreCompact', {}, 'running'],
       ['post-compact', 'PostCompact', {}, 'completed'],
-      ['subagent-start', 'SubagentStart', {}, 'running'],
-      ['subagent-stop', 'SubagentStop', {}, 'completed'],
     ] as const
     for (const [fixtureName, claudeHook, claudePayload, status] of equivalents) {
       const codex = processEvent(rawFixture(10, fixtureName), context()).event
@@ -136,6 +134,25 @@ describe('Codex processEvent', () => {
         displayTimeline: true,
       })
     }
+
+    // Subagent events: Codex keeps generic 'Subagent' label while Claude has distinct SubStart/SubStop
+    const codexSubStart = processEvent(rawFixture(10, 'subagent-start'), context()).event
+    expect(codexSubStart).toMatchObject({
+      label: 'Subagent',
+      iconId: 'SubagentStart',
+      status: 'running',
+      displayEventStream: true,
+      displayTimeline: true,
+    })
+
+    const codexSubStop = processEvent(rawFixture(10, 'subagent-stop'), context()).event
+    expect(codexSubStop).toMatchObject({
+      label: 'Subagent',
+      iconId: 'SubagentStop',
+      status: 'completed',
+      displayEventStream: true,
+      displayTimeline: true,
+    })
   })
   test('pairs native tool_use_id rows and merges successful output into the pre-event', () => {
     const pre = processEvent(
