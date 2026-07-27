@@ -36,11 +36,12 @@ function count(store: EventStore): Promise<number> {
 }
 
 describe('spool consumer', () => {
-  it('recovers a processing entry after a consumer crash and commits it once', async () => {
+  it('upgrades with pending and processing entries without loss or duplication', async () => {
     const root = makeDataRoot('spool-restart')
     roots.push(root)
     const store = new SqliteAdapter(':memory:')
     writeEntry(root, 'crash-replay')
+    writeEntry(root, 'still-pending')
     const paths = runtimePaths(root)
     mkdirSync(join(paths.spoolDir, 'processing'), { recursive: true })
     renameSync(
@@ -51,8 +52,8 @@ describe('spool consumer', () => {
     const restarted = createSpoolConsumer({ dataRoot: root, store })
     await restarted.consumeOnce()
 
-    expect(await count(store)).toBe(1)
-    expect(restarted.stats()).toEqual({ lastCommittedEventId: 'crash-replay', spoolPending: 0 })
+    expect(await count(store)).toBe(2)
+    expect(restarted.stats()).toEqual({ lastCommittedEventId: 'still-pending', spoolPending: 0 })
   })
 
   it('uses the SQLite spool-event unique constraint when replayed twice', async () => {
