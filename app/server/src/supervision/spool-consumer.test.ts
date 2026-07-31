@@ -219,7 +219,12 @@ describe('spool consumer', () => {
       join(pending, 'future.json'),
       JSON.stringify({ timestamp: 1, spoolSchemaVersion: 99, envelope: {} }),
     )
-    const consumer = createSpoolConsumer({ dataRoot: root, store, maxAttempts: 2 })
+    const consumer = createSpoolConsumer({
+      dataRoot: root,
+      store,
+      maxAttempts: 2,
+      unsupportedSchemaGraceMs: 0,
+    })
     await consumer.consumeOnce()
     await consumer.consumeOnce()
 
@@ -229,6 +234,37 @@ describe('spool consumer', () => {
       attempts: 2,
       failureType: 'unsupported-spool-schema',
       failureReason: expect.stringContaining('99'),
+    })
+  })
+
+  it('keeps retrying an unsupported schema entry past maxAttempts while within grace', async () => {
+    const root = makeDataRoot('spool-unsupported-schema-grace')
+    roots.push(root)
+    const store = new SqliteAdapter(':memory:')
+    const pending = join(runtimePaths(root).spoolDir, 'pending')
+    mkdirSync(pending, { recursive: true })
+    writeFileSync(
+      join(pending, 'future.json'),
+      JSON.stringify({ timestamp: 1, spoolSchemaVersion: 99, envelope: {} }),
+    )
+    const consumer = createSpoolConsumer({
+      dataRoot: root,
+      store,
+      maxAttempts: 2,
+      unsupportedSchemaGraceMs: 60_000,
+    })
+    await consumer.consumeOnce()
+    await consumer.consumeOnce()
+    await consumer.consumeOnce()
+
+    expect(existsSync(join(runtimePaths(root).spoolDir, 'failed/future.json'))).toBe(false)
+    expect(consumer.stats().spoolPending).toBe(1)
+    expect(
+      JSON.parse(readFileSync(join(pending, 'future.json'), 'utf8')),
+    ).toMatchObject({
+      attempts: 3,
+      failureType: 'unsupported-spool-schema',
+      firstFailureAt: expect.any(Number),
     })
   })
 })

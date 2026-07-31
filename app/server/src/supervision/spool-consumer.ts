@@ -46,6 +46,12 @@ export interface SpoolConsumerOptions {
   /** Failed entries move aside after this many unsuccessful commits. */
   maxAttempts?: number
   pollIntervalMs?: number
+  /**
+   * An unsupported spool schema is retried until this much wall-clock time
+   * has passed since it first failed, independent of maxAttempts/pollIntervalMs,
+   * so a real collector upgrade has a chance to make it consumable again.
+   */
+  unsupportedSchemaGraceMs?: number
   onStats?: (stats: SpoolStats) => void
   broadcastToSession?: (sessionId: string, message: object) => void
   broadcastToAll?: (message: object) => void
@@ -61,6 +67,7 @@ interface SpoolEntry {
   attempts?: number
   failureType?: string
   failureReason?: string
+  firstFailureAt?: number
 }
 
 /** An entry for a newer/unknown spool protocol. It may become consumable after an upgrade. */
@@ -100,6 +107,7 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
   const failed = join(spool, 'failed')
   const maxAttempts = options.maxAttempts ?? 3
   const pollIntervalMs = options.pollIntervalMs ?? 250
+  const unsupportedSchemaGraceMs = options.unsupportedSchemaGraceMs ?? 5 * 60 * 1000
   let lastCommittedEventId: string | null = null
   let spoolLastFailure: SpoolFailure | null = null
   let timer: ReturnType<typeof setInterval> | null = null
@@ -345,10 +353,14 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
           const failureType =
             error instanceof UnsupportedSpoolSchemaError ? error.failureType : 'spool-commit-error'
           const failureReason = error instanceof Error ? error.message : String(error)
+          const now = Date.now()
+          const firstFailureAt =
+            failureType === 'unsupported-spool-schema' ? (entry?.firstFailureAt ?? now) : undefined
           if (entry) {
             entry.attempts = attempts
             entry.failureType = failureType
             entry.failureReason = failureReason
+            if (firstFailureAt !== undefined) entry.firstFailureAt = firstFailureAt
             writeFileSync(processingPath, JSON.stringify(entry) + '\n')
           } else if (existsSync(processingPath)) {
             // Even invalid JSON must leave a useful forensic record when it is
@@ -363,7 +375,9 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
               }) + '\n',
             )
           }
-          if (entry && attempts < maxAttempts) {
+          const withinSchemaGrace =
+            firstFailureAt !== undefined && now - firstFailureAt < unsupportedSchemaGraceMs
+          if (entry && (attempts < maxAttempts || withinSchemaGrace)) {
             renameSync(processingPath, pendingPath)
           } else if (existsSync(processingPath)) {
             spoolLastFailure = {
