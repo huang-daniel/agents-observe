@@ -259,9 +259,7 @@ describe('spool consumer', () => {
 
     expect(existsSync(join(runtimePaths(root).spoolDir, 'failed/future.json'))).toBe(false)
     expect(consumer.stats().spoolPending).toBe(1)
-    expect(
-      JSON.parse(readFileSync(join(pending, 'future.json'), 'utf8')),
-    ).toMatchObject({
+    expect(JSON.parse(readFileSync(join(pending, 'future.json'), 'utf8'))).toMatchObject({
       attempts: 3,
       failureType: 'unsupported-spool-schema',
       firstFailureAt: expect.any(Number),
