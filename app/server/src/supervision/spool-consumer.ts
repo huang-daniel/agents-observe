@@ -17,7 +17,7 @@ import type { EventStore } from '../storage/types'
 import { DuplicateSpoolEventIdError } from '../storage/types'
 import { resolveProject } from '../services/project-resolver'
 import { endAgentSession, noteAgentActivity } from '../consumer-tracker'
-import { runtimePaths } from './paths'
+import { runtimePaths, SUPPORTED_SPOOL_SCHEMAS } from './paths'
 
 interface RawHookEntry {
   agentClass?: string
@@ -62,8 +62,6 @@ interface SpoolEntry {
   failureType?: string
   failureReason?: string
 }
-
-const SUPPORTED_SPOOL_SCHEMAS = [1, 2] as const
 
 /** An entry for a newer/unknown spool protocol. It may become consumable after an upgrade. */
 export class UnsupportedSpoolSchemaError extends Error {

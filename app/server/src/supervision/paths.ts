@@ -14,6 +14,14 @@
 
 import { chownSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 
+/**
+ * Spool schema versions this collector build both advertises via heartbeat and
+ * accepts on commit. One list because the two must never drift apart: a
+ * version the consumer would reject on commit is never safe to advertise as
+ * supported, and vice versa.
+ */
+export const SUPPORTED_SPOOL_SCHEMAS = [1, 2] as const
+
 export interface RuntimePaths {
   dataRoot: string
   runtimeDir: string
