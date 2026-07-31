@@ -27,24 +27,30 @@ export class EventStore {
   // Agent class lookup — set by the framework from the agents query
   private agentClassMap = new Map<string, string>()
   private agentMap = new Map<string, Agent>()
+  private agentClassMapVersion = 0
 
   /**
    * Update the agent class mapping (called when agents data changes).
    */
   setAgents(agents: Agent[]) {
-    this.agentMap.clear()
-    this.agentClassMap.clear()
+    const nextAgentMap = new Map<string, Agent>()
+    const nextAgentClassMap = new Map<string, string>()
     for (const agent of agents) {
-      this.agentMap.set(agent.id, agent)
+      nextAgentMap.set(agent.id, agent)
       // Legacy rows lack agent_class; treat missing as claude-code so the
       // historical Claude Code data keeps rendering correctly.
-      this.agentClassMap.set(agent.id, agent.agentClass || 'claude-code')
+      nextAgentClassMap.set(agent.id, agent.agentClass || 'claude-code')
     }
+
+    if (!mapsEqual(this.agentClassMap, nextAgentClassMap)) this.agentClassMapVersion++
+    this.agentMap = nextAgentMap
+    this.agentClassMap = nextAgentClassMap
   }
 
   // Track what we've already processed to enable incremental updates
   private lastProcessedCount = 0
   private lastDedupEnabled = true
+  private lastProcessedAgentClassMapVersion = 0
 
   /**
    * Process raw events. Automatically detects whether to do a full
@@ -56,10 +62,12 @@ export class EventStore {
     compiledFilters: readonly import('@/lib/filters/types').CompiledFilter[],
   ): EnrichedEvent[] {
     // Full reprocess needed if any of: dedup toggled, compiled filter
-    // set changed reference, events were replaced (not appended).
+    // set changed reference, agent-class mapping changed, or events were
+    // replaced (not appended).
     const needsFullReprocess =
       dedupEnabled !== this.lastDedupEnabled ||
       compiledFilters !== this.lastCompiledFilters ||
+      this.agentClassMapVersion !== this.lastProcessedAgentClassMapVersion ||
       rawEvents.length < this.lastProcessedCount ||
       (this.lastProcessedCount > 0 &&
         rawEvents.length > 0 &&
@@ -75,6 +83,7 @@ export class EventStore {
         this.processOne(raw)
       }
       this.lastProcessedCount = rawEvents.length
+      this.lastProcessedAgentClassMapVersion = this.agentClassMapVersion
       return this.events
     }
 
@@ -87,6 +96,7 @@ export class EventStore {
       this.processOne(raw)
     }
     this.lastProcessedCount = rawEvents.length
+    this.lastProcessedAgentClassMapVersion = this.agentClassMapVersion
     this.events = [...this.events]
     return this.events
   }
@@ -221,4 +231,12 @@ export class EventStore {
     this.pendingUpdates = []
     this.lastProcessedCount = 0
   }
+}
+
+function mapsEqual(left: Map<string, string>, right: Map<string, string>) {
+  if (left.size !== right.size) return false
+  for (const [agentId, agentClass] of left) {
+    if (right.get(agentId) !== agentClass) return false
+  }
+  return true
 }
