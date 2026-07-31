@@ -18,10 +18,10 @@ observe_env_init || exit 0
 # rather than silently handing it a newer raw-hook entry it would dead-letter.
 write_spool_entry() {
   local legacy_envelope
-  if observe_collector_healthy >/dev/null 2>&1 &&
+  if [ "$collector_healthy" -eq 0 ] &&
     observe_collector_supports_spool_schema "$OBSERVE_SPOOL_SCHEMA_RAW_HOOK"; then
     printf '%s' "$input" | observe_spool_write_hook
-  elif observe_collector_healthy >/dev/null 2>&1; then
+  elif [ "$collector_healthy" -eq 0 ]; then
     # Normalization was what the schema-1 hook writer did before raw spooling.
     # It is intentionally paid only during a mixed-version rollout.
     legacy_envelope=$(printf '%s' "$input" | node "$SCRIPT_DIR/observe_cli.mjs" spool-envelope) || return 1
@@ -33,6 +33,9 @@ write_spool_entry() {
   fi
 }
 
+observe_collector_healthy >/dev/null 2>&1
+collector_healthy=$?
+
 # A failed spool write must not discard the event: retain the established
 # direct CLI delivery as the last-resort compatibility path.
 if ! write_spool_entry > /dev/null 2>&1; then
@@ -40,7 +43,7 @@ if ! write_spool_entry > /dev/null 2>&1; then
   exit 0
 fi
 
-if ! observe_collector_healthy >/dev/null 2>&1; then
+if [ "$collector_healthy" -ne 0 ]; then
   "$SCRIPT_DIR/supervision/observe-arm.sh" start > /dev/null 2>&1 &
 fi
 exit 0
