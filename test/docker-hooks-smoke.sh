@@ -58,9 +58,15 @@ run_hook() {
 run_hook claude-code docker-smoke-claude
 run_hook codex docker-smoke-codex
 
-for _ in $(seq 1 30); do
-  HEALTH="$(curl -fsS "http://127.0.0.1:$PORT/api/health")"
-  if node -e '
+# hook.sh backgrounds its work and returns immediately, so a raw event can
+# still be in flight when the loop below takes its first sample. Re-check
+# health *and* API queryability together on every iteration so a premature
+# "already drained" reading (observed before the slower hook's event has
+# even reached the spool) gets caught by the session checks and retried,
+# instead of being asserted once against a possibly-incomplete snapshot.
+verify() {
+  HEALTH="$(curl -fsS "http://127.0.0.1:$PORT/api/health")" || return 1
+  node -e '
     const health = JSON.parse(process.argv[1]);
     process.exit(
       health.collector?.spoolPending === 0 &&
@@ -69,36 +75,38 @@ for _ in $(seq 1 30); do
         ? 0
         : 1,
     )
-  ' "$HEALTH"; then
+  ' "$HEALTH" || return 1
+
+  SESSIONS="$(curl -fsS "http://127.0.0.1:$PORT/api/sessions/recent?limit=20")" || return 1
+  node -e '
+    const sessions = JSON.parse(process.argv[1]);
+    for (const id of ["docker-smoke-claude", "docker-smoke-codex"]) {
+      const session = sessions.find((item) => item.id === id);
+      if (!session || session.eventCount < 1) process.exit(1);
+    }
+  ' "$SESSIONS" || return 1
+
+  for session_id in docker-smoke-claude docker-smoke-codex; do
+    EVENTS="$(curl -fsS "http://127.0.0.1:$PORT/api/sessions/$session_id/events")" || return 1
+    node -e '
+      const events = JSON.parse(process.argv[1]);
+      process.exit(events.some((event) => event.hookName === "SessionStart") ? 0 : 1);
+    ' "$EVENTS" || return 1
+  done
+}
+
+verified=0
+for _ in $(seq 1 30); do
+  if verify; then
+    verified=1
     break
   fi
   sleep 1
 done
-
-node -e '
-  const health = JSON.parse(process.argv[1]);
-  if (health.collector?.spoolPending !== 0) throw new Error("spool did not drain");
-  if (health.collector?.spoolFailed !== 0) throw new Error("raw hook dead-lettered");
-  if (!health.collector?.lastCommittedEventId) throw new Error("no event was committed");
-' "$(curl -fsS "http://127.0.0.1:$PORT/api/health")"
-
-SESSIONS="$(curl -fsS "http://127.0.0.1:$PORT/api/sessions/recent?limit=20")"
-node -e '
-  const sessions = JSON.parse(process.argv[1]);
-  for (const id of ["docker-smoke-claude", "docker-smoke-codex"]) {
-    const session = sessions.find((item) => item.id === id);
-    if (!session || session.eventCount < 1) throw new Error(`event for ${id} is not queryable`);
-  }
-' "$SESSIONS"
-
-for session_id in docker-smoke-claude docker-smoke-codex; do
-  EVENTS="$(curl -fsS "http://127.0.0.1:$PORT/api/sessions/$session_id/events")"
-  node -e '
-    const events = JSON.parse(process.argv[1]);
-    if (!events.some((event) => event.hookName === "SessionStart")) {
-      throw new Error("committed hook event is not queryable");
-    }
-  ' "$EVENTS"
-done
+if [ "$verified" -ne 1 ]; then
+  echo 'Docker hook smoke test failed: spool/session state did not settle in time' >&2
+  curl -fsS "http://127.0.0.1:$PORT/api/health" >&2 || true
+  exit 1
+fi
 
 echo 'Docker hook smoke test passed'

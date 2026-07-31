@@ -27,6 +27,7 @@ In dev mode, client and server run as separate processes on separate ports. In p
 | `just restart` | Restart the server |
 | `just build` | Build the Docker image locally |
 | `just test` | Run all tests |
+| `just test-docker-hooks` | Build the production image and smoke-test its shipped hook entrypoint |
 | `just test-event` | Send a test event |
 | `just health` | Check server health |
 | `just check` | **Run before every commit** — tests + format |
@@ -199,3 +200,14 @@ scripts/test-fresh-install.sh
 ```
 
 See [test/fresh-install/README.md](../test/fresh-install/README.md) for details.
+
+Docker hooks smoke test (requires Docker):
+
+```bash
+just test-docker-hooks
+```
+
+Builds the production image and runs its shipped `hook.sh` for both
+`claude-code` and `codex` against a shared data root, verifying the spool
+drains with zero failures and events land in the API. See
+[test/docker-hooks-smoke.sh](../test/docker-hooks-smoke.sh).
