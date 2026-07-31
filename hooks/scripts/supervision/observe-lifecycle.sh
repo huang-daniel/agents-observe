@@ -24,50 +24,18 @@ observe_lifecycle_deadline() { # [seconds]
   printf '%s\n' "$(( $(observe_now_epoch) + ${1:-$OBSERVE_START_TIMEOUT} + 1 ))"
 }
 
-# How long a start attempt waits for confirmation. A docker start may have to
-# pull an image before the collector exists at all, which is a different order
-# of magnitude from forking a local process.
-observe_start_timeout_for() { # <runtime>
-  case "${1:-local}" in
-    docker) printf '%s\n' "$OBSERVE_DOCKER_START_TIMEOUT" ;;
-    *) printf '%s\n' "$OBSERVE_START_TIMEOUT" ;;
-  esac
-}
-
-# How long to wait for a signalled collector to release its lock and heartbeat.
-# `docker stop` gives the container its own grace period before killing it, so
-# the host has to outwait that rather than the local process's shutdown.
-observe_shutdown_timeout_for() { # <runtime>
-  case "${1:-local}" in
-    docker) printf '%s\n' "$(( OBSERVE_DOCKER_STOP_TIMEOUT + OBSERVE_START_TIMEOUT ))" ;;
-    *) printf '%s\n' "$OBSERVE_START_TIMEOUT" ;;
-  esac
-}
-
-# A fresh instance id for a collector run the supervisor is about to start.
-# Only the docker path needs one: a local collector is identified by the PID we
-# forked, while a container has to be told which run it is before it starts, so
-# the host can recognise it afterwards.
-observe_new_instance_id() {
-  if [ -r /proc/sys/kernel/random/uuid ]; then
-    tr -d '\n' < /proc/sys/kernel/random/uuid
-    printf '\n'
-  else
-    printf '%s-%s-%s\n' "$(observe_now_epoch)" "${BASHPID:-$$}" "$RANDOM"
-  fi
-}
-
 # Wait for the start lock rather than racing a peer. The bounded wait is an
 # explicit policy: on timeout, the caller fails rather than creating a second
 # collector. A dead start-lock holder is reclaimed by the primitive itself.
 #
 # A waiter also watches for the outcome it actually wants. The winner keeps the
-# start lock until it has *confirmed* its collector, which for docker can be
-# minutes after the collector became healthy; peers wait a small fraction of
-# that. Polling only the lock made every one of them fail a start that had in
-# fact already succeeded — a herd of failures around one success. Watching
-# health costs nothing extra (the peer is already polling) and cannot create a
-# second collector: it only ever returns without starting anything.
+# start lock until it has *confirmed* its collector, which on a first start
+# (dependencies still to install) can be minutes after the collector became
+# healthy; peers wait a small fraction of that. Polling only the lock made every
+# one of them fail a start that had in fact already succeeded — a herd of
+# failures around one success. Watching health costs nothing extra (the peer is
+# already polling) and cannot create a second collector: it only ever returns
+# without starting anything.
 #
 # Returns: 0 acquired the lock, 2 a peer's collector became healthy, 1 timed out.
 observe_lifecycle_acquire_start_lock() {
@@ -85,58 +53,103 @@ observe_lifecycle_release_start_lock() {
   observe_start_lock_release || true
 }
 
-# Start one collector in whichever runtime this host supports, and print the
-# token that identifies the run so the caller can bind its confirmation to the
-# thing it actually started rather than to any healthy successor that shows up
-# during a race. The token is a PID for a local collector and an instance id for
-# a containerized one — see observe_wait_for_spawned_collector.
-observe_spawn_collector() { # prints the spawned owner token
-  case "$(observe_resolved_runtime)" in
-    docker) observe_spawn_collector_docker ;;
-    *) observe_spawn_collector_local ;;
-  esac
+# Where a bootstrap install writes its output. Kept beside the lifecycle ledger
+# so a failed first start leaves one place to look.
+observe_install_log() {
+  printf '%s\n' "${OBSERVE_RUNTIME:-}/collector-install.log"
 }
 
-# Hand the container start to the Node CLI rather than re-implementing image
-# pulls, version checks, port fallback and bind mounts in bash. That keeps one
-# implementation of "run the container" (hooks/scripts/lib/docker.mjs) while
-# supervision keeps its single decision point here.
+# Run one npm install in <dir>, appending everything it says to <log-file>.
 #
-# The instance id is generated *before* the container starts and passed in, so
-# the container carries it as a label from birth: that label is what lets the
-# host tell this collector run from an earlier one with the same name.
+# `npm ci` first when there is a lockfile: it is the reproducible install and
+# the one a shipped checkout should get. It refuses to run when the lockfile is
+# missing or out of sync with package.json, and that refusal is not a reason to
+# leave the collector unusable — `npm install` is the documented fallback for
+# exactly that state.
 #
-# The CLI runs in the *foreground* and its exit status decides the outcome. A
-# detached start proves only that a request was launched, so a failed docker
-# start — or a container that came up as something other than this instance —
-# used to be recorded as a spawn and then spent the whole confirmation window
-# waiting for it. Nothing user-facing waits on this: hook.sh already backgrounds
-# the arm, and the CLI's own health wait is bounded well inside the docker start
-# timeout this caller allows.
-observe_spawn_collector_docker() { # prints the instance id
-  local cli token output
-  cli="$OBSERVE_ROOT/hooks/scripts/observe_cli.mjs"
-  [ -f "$cli" ] || return 1
-  command -v node > /dev/null 2>&1 || return 1
-  command -v docker > /dev/null 2>&1 || return 1
+# Bounded by `timeout` where the host has it. Where it does not (stock macOS),
+# the install runs unbounded rather than not at all: the start lock is held
+# throughout, so a wedged install blocks starts, but a skipped one guarantees
+# there is nothing to start.
+observe_npm_install() { # <dir> <log-file>
+  local dir=${1:-} logfile=${2:-} npm=$OBSERVE_NPM
+  [ -d "$dir" ] || return 1
+  command -v "$npm" > /dev/null 2>&1 || {
+    printf 'observe-lifecycle: npm is unavailable; cannot install %s\n' "$dir" >&2
+    return 1
+  }
 
-  token=$(observe_new_instance_id)
-  [ -n "$token" ] || return 1
-
-  if output=$(AGENTS_OBSERVE_INSTANCE_ID=$token \
-    AGENTS_OBSERVE_DATA_ROOT=$OBSERVE_DATA_ROOT \
-    node "$cli" start < /dev/null 2>&1); then
-    printf '%s\n' "$token"
-    return 0
+  local -a runner=()
+  if command -v timeout > /dev/null 2>&1; then
+    runner=(timeout "$OBSERVE_INSTALL_TIMEOUT")
   fi
-  observe_lifecycle_log start docker-start-failed \
-    "instance=$token detail=$(printf '%s' "$output" | tail -n 3)"
-  return 1
+
+  if [ -f "$dir/package-lock.json" ]; then
+    if (cd "$dir" && "${runner[@]}" "$npm" ci --no-audit --no-fund) \
+      < /dev/null >> "$logfile" 2>&1; then
+      return 0
+    fi
+    printf '\n--- npm ci failed in %s; retrying with npm install ---\n' "$dir" >> "$logfile" 2>&1
+  fi
+  (cd "$dir" && "${runner[@]}" "$npm" install --no-audit --no-fund) \
+    < /dev/null >> "$logfile" 2>&1
 }
 
+# Make a source-only checkout runnable before the collector is forked.
+#
+# A Claude plugin marketplace install is a clone of this repository and nothing
+# else: no `app/server/node_modules`, no built dashboard. Rather than requiring
+# a manual `npm install`, the first start pays for it once, here, with the start
+# lock held so concurrent hooks cannot install on top of each other.
+#
+# The two halves fail differently on purpose. Without server dependencies there
+# is no collector at all, so that failure aborts the start with an actionable
+# message. The dashboard is only the UI — a collector with no `dist/` still
+# captures every event — so a failed client build is a warning, not a dead
+# collector.
+observe_bootstrap_collector() {
+  local logfile server_dir client_dir
+  server_dir="$OBSERVE_ROOT/app/server"
+  client_dir="$OBSERVE_ROOT/app/client"
+  logfile=$(observe_install_log)
+
+  if [ ! -d "$server_dir/node_modules" ]; then
+    observe_lifecycle_log install server-deps-started "log=$logfile"
+    printf 'collector: installing server dependencies (one-time, first start of a source-only install)\n' >&2
+    if ! observe_npm_install "$server_dir" "$logfile"; then
+      observe_lifecycle_log install server-deps-failed "log=$logfile"
+      printf 'observe-lifecycle: could not install the collector'"'"'s dependencies in %s\n' \
+        "$server_dir" >&2
+      printf 'observe-lifecycle: see %s, then retry — or run `npm install` in that directory by hand\n' \
+        "$logfile" >&2
+      return 1
+    fi
+    observe_lifecycle_log install server-deps-installed "log=$logfile"
+  fi
+
+  if [ ! -f "$client_dir/dist/index.html" ] && [ -f "$client_dir/package.json" ]; then
+    observe_lifecycle_log install client-build-started "log=$logfile"
+    printf 'collector: building the dashboard (one-time, first start of a source-only install)\n' >&2
+    if { [ -d "$client_dir/node_modules" ] || observe_npm_install "$client_dir" "$logfile"; } &&
+      (cd "$client_dir" && "$OBSERVE_NPM" run build) < /dev/null >> "$logfile" 2>&1; then
+      observe_lifecycle_log install client-build-succeeded "log=$logfile"
+    else
+      observe_lifecycle_log install client-build-failed "log=$logfile"
+      printf 'observe-lifecycle: dashboard build failed; events are still captured but the UI will not load (see %s)\n' \
+        "$logfile" >&2
+    fi
+  fi
+  return 0
+}
+
+# Start one collector as a host process and print its PID, so the caller can
+# bind its confirmation to the thing it actually started rather than to any
+# healthy successor that shows up during a race — see
+# observe_wait_for_spawned_collector.
 observe_spawn_collector_local() { # prints spawned PID
-  local entrypoint data_dir db_path client_dist_path
+  local entrypoint data_dir db_path client_dist_path logfile
   [ -d "$OBSERVE_ROOT/app/server" ] || return 1
+  observe_bootstrap_collector || return 1
 
   # The hook runs this shell arm directly, bypassing config.mjs's
   # getServerEnv(). Keep the local server's state beside the supervision
@@ -145,6 +158,11 @@ observe_spawn_collector_local() { # prints spawned PID
   db_path=${AGENTS_OBSERVE_DB_PATH:-"$data_dir/observe.db"}
   client_dist_path=${AGENTS_OBSERVE_CLIENT_DIST_PATH:-"$OBSERVE_ROOT/app/client/dist"}
   mkdir -p "$data_dir" || return 1
+
+  # One log per collector run — truncated at each start rather than appended, so
+  # it stays the record of the collector that is running now. `observe_cli.mjs
+  # logs-server` and `/observe logs` read this file.
+  logfile="$OBSERVE_RUNTIME/collector.log"
 
   (
     cd "$OBSERVE_ROOT/app/server" || exit 1
@@ -159,7 +177,7 @@ observe_spawn_collector_local() { # prints spawned PID
         exit 1
       }
       nohup "$entrypoint" src/index.ts "$OBSERVE_ENTRYPOINT_MARKER" \
-        </dev/null >/dev/null 2>&1 &
+        </dev/null >"$logfile" 2>&1 &
     else
       command -v node > /dev/null 2>&1 || {
         printf 'observe-lifecycle: node is unavailable\n' >&2
@@ -168,7 +186,7 @@ observe_spawn_collector_local() { # prints spawned PID
       # Invoke Node directly rather than the tsx CLI: tsx can fork a wrapper,
       # while this PID must be the one that claims the collector lock.
       nohup node --import tsx src/index.ts "$OBSERVE_ENTRYPOINT_MARKER" \
-        </dev/null >/dev/null 2>&1 &
+        </dev/null >"$logfile" 2>&1 &
     fi
     printf '%s\n' "$!"
   )
@@ -176,27 +194,15 @@ observe_spawn_collector_local() { # prints spawned PID
 
 # Confirm the collector we started, not merely any healthy successor that
 # happened to appear during a race. The predicate below remains the one
-# canonical health decision: this only binds its healthy result to the run we
-# launched — by PID for a local collector, by instance id for a container, whose
-# PID lives in a namespace this host cannot read.
-observe_wait_for_spawned_collector() { # <token> [runtime]
-  local spawned=${1:-} runtime=${2:-local} deadline
-  [ -n "$spawned" ] || return 1
-  [ "$runtime" = docker ] || observe_is_pid "$spawned" || return 1
-  deadline=$(observe_lifecycle_deadline "$(observe_start_timeout_for "$runtime")")
+# canonical health decision: this only binds its healthy result to the PID we
+# forked.
+observe_wait_for_spawned_collector() { # <pid>
+  local spawned=${1:-} deadline
+  observe_is_pid "$spawned" || return 1
+  deadline=$(observe_lifecycle_deadline)
   while :; do
     if observe_collector_healthy && observe_collector_lock_snapshot >/dev/null; then
-      if [ "$runtime" = docker ]; then
-        # Either the run we asked for, or the container we manage: docker allows
-        # one live container per name, so a healthy collector running as *that*
-        # container is this data root's collector however it got started. A peer
-        # supervisor winning the race is a success, not a duplicate.
-        [ "$OBSERVE_LOCK_INSTANCE_ID" = "$spawned" ] && return 0
-        [ -n "$OBSERVE_LOCK_CONTAINER" ] &&
-          [ "$OBSERVE_LOCK_CONTAINER" = "$OBSERVE_DOCKER_CONTAINER" ] && return 0
-      else
-        [ "$OBSERVE_LOCK_PID" = "$spawned" ] && return 0
-      fi
+      [ "$OBSERVE_LOCK_PID" = "$spawned" ] && return 0
     fi
     [ "$(observe_now_epoch)" -ge "$deadline" ] && return 1
     sleep "$OBSERVE_START_POLL"

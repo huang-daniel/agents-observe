@@ -10,11 +10,11 @@ Claude Code Hooks  ->  hook.sh  ->  durable spool  ->  API Server (SQLite)  ->  
 ```
 
 - **Hooks** (`hooks/scripts/hook.sh`) read raw JSON from stdin and write it to the durable spool — negotiating the spool schema with the live collector, arming it via the lock/heartbeat supervisor when it isn't healthy (see [collector-supervision.md](./collector-supervision.md)). Falls back to `observe_cli.mjs` (HTTP POST) only if the spool write itself fails.
-- **CLI** (`hooks/scripts/observe_cli.mjs`) handles `hook-sync`, `health`, `start`, `stop`, `restart`, `logs`, `db-reset`, and the `hook` fallback above. The supervisor arm calls `start` for the container in the docker collector runtime — that is the only Docker start path.
+- **CLI** (`hooks/scripts/observe_cli.mjs`) handles `hook-sync`, `health`, `start`, `stop`, `restart`, `logs-server`, `db-reset`, and the `hook` fallback above. Its `start`/`stop`/`restart` drive the supervisor arm rather than starting anything themselves — the arm is the one start path.
 - **Server** (`app/server/`) Hono + SQLite + WebSocket
 - **Client** (`app/client/`) React 19 + shadcn dashboard
 
-In dev mode, client and server run as separate processes on separate ports. In production/Docker, the client is bundled and served by the server on port 4981.
+In dev mode, client and server run as separate processes on separate ports. Otherwise the client is bundled and served by the server on port 4981.
 
 ## Commands
 
@@ -22,18 +22,16 @@ In dev mode, client and server run as separate processes on separate ports. In p
 |---------|-------------|
 | `just install` | Install all dependencies |
 | `just dev` | Start server + client in dev mode (hot reload) |
-| `just start` | Start the server in Docker (the same call the supervisor makes) |
+| `just start` | Start the supervised collector (the same path the plugin's hooks use) |
 | `just stop` | Stop the server |
 | `just restart` | Restart the server |
-| `just build` | Build the Docker image locally |
 | `just test` | Run all tests |
-| `just test-docker-hooks` | Build the production image and smoke-test its shipped hook entrypoint |
 | `just test-event` | Send a test event |
 | `just health` | Check server health |
 | `just check` | **Run before every commit** — tests + format |
 | `just fmt` | Format all source files |
 | `just db-reset` | Delete the SQLite database (stops/restarts server) |
-| `just logs` | Follow Docker container logs |
+| `just logs` | Tail the collector server log |
 | `just open` | Open dashboard in browser |
 | `just cli <cmd>` | Run CLI directly |
 
@@ -44,7 +42,7 @@ app/server/        # Hono server, SQLite, WebSocket
   src/supervision/ # Collector lock, heartbeat, and health predicate
 app/client/        # React 19 + shadcn dashboard
 hooks/scripts/     # Hook entrypoint, CLI, and shared libs
-  lib/             # Shared libs: config, docker, fs, http, hooks, callbacks, logger
+  lib/             # Shared libs: config, fs, http, hooks, callbacks, logger
     agents/        # Agent-class-specific libs (claude-code, codex, unknown)
   supervision/     # Shell-side supervision primitives, health diagnostic, and arm
 hooks/hooks.json   # Plugin hook definitions
@@ -53,10 +51,8 @@ scripts/           # Release and test harness scripts
 test/              # Tests (mirrors hooks/scripts structure)
 docs/              # Plans, specs, and this file
 .claude-plugin/    # Plugin + marketplace manifests
-Dockerfile         # Production container image
-docker-compose.yml # Reference compose file (not used by plugin)
 justfile           # Task runner commands
-start.mjs          # Local server entrypoint (non-Docker)
+start.mjs          # Foreground server entrypoint (installs deps, builds client)
 ```
 
 ## Environment Variables
@@ -181,7 +177,7 @@ scripts/release.sh <version>        # full release
 scripts/release.sh --dry-run <version>  # test without committing
 ```
 
-The release script generates a CHANGELOG.md entry via Claude, opens it in your editor for review, runs tests, builds the Docker image, runs the fresh install test harness, then commits, tags, and pushes. GitHub Actions builds the multi-arch image and creates the release.
+The release script generates a CHANGELOG.md entry via Claude, opens it in your editor for review, runs tests, runs the fresh install test harness, then commits, tags, and pushes. GitHub Actions creates the release from the tag and its changelog entry.
 
 ## Testing
 
@@ -193,21 +189,13 @@ just test                           # all tests only
 just fmt                            # format only
 ```
 
-Fresh install test harness (requires Docker + OAuth token in `.env`):
+Fresh install test harness — runs the real `claude` CLI against a
+dependency-free copy of the plugin inside a throwaway container, proving the
+first start bootstraps itself. Needs Docker (as the isolation boundary only)
+and an OAuth token in `.env`:
 
 ```bash
 scripts/test-fresh-install.sh
 ```
 
 See [test/fresh-install/README.md](../test/fresh-install/README.md) for details.
-
-Docker hooks smoke test (requires Docker):
-
-```bash
-just test-docker-hooks
-```
-
-Builds the production image and runs its shipped `hook.sh` for both
-`claude-code` and `codex` against a shared data root, verifying the spool
-drains with zero failures and events land in the API. See
-[test/docker-hooks-smoke.sh](../test/docker-hooks-smoke.sh).

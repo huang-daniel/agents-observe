@@ -10,19 +10,12 @@ const router = new Hono()
 
 function readChangelog(): string | null {
   const dir = dirname(fileURLToPath(import.meta.url))
-  const paths = [
-    resolve(dir, '../../../../CHANGELOG.md'), // dev: app/server/src/routes -> root
-    resolve(dir, '../../../CHANGELOG.md'), // Docker: /app/server/src/routes -> /app
-    '/app/CHANGELOG.md', // Docker fallback
-  ]
-  for (const p of paths) {
-    try {
-      return readFileSync(p, 'utf8')
-    } catch {
-      continue
-    }
+  // app/server/src/routes -> repo root
+  try {
+    return readFileSync(resolve(dir, '../../../../CHANGELOG.md'), 'utf8')
+  } catch {
+    return null
   }
-  return null
 }
 
 router.get('/changelog', (c) => {

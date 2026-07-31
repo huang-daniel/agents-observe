@@ -120,65 +120,6 @@ observe_pid_has_marker() { # <pid> <marker>
   return 1
 }
 
-# ─── container identity ────────────────────────────────────────────────────
-#
-# A containerized collector's PID belongs to the container's namespace, so none
-# of the identity above can see it: from the host, that PID is either nobody or
-# somebody else entirely. The equivalent proof for a container is the container
-# itself — a name (docker guarantees at most one live container per name) plus
-# the instance id it was labelled with when this run started.
-#
-# Result is reported through a status word rather than a bare exit code because
-# "cannot verify" must never collapse into "gone": reclaiming a live container's
-# lock because the docker CLI is missing would produce two collectors.
-# Sets OBSERVE_CONTAINER_STATE to running | stopped | unverifiable.
-OBSERVE_CONTAINER_STATE=unverifiable
-observe_container_state() { # <container> <instance-id>
-  local container=${1:-} instance=${2:-} out
-  OBSERVE_CONTAINER_STATE=unverifiable
-  [ -n "$container" ] && [ -n "$instance" ] || return 1
-  command -v docker > /dev/null 2>&1 || return 1
-
-  out=$(docker inspect --format \
-    "{{.State.Running}} {{index .Config.Labels \"$OBSERVE_DOCKER_INSTANCE_LABEL\"}}" \
-    "$container" 2>/dev/null) || {
-    # `inspect` fails the same way for "no such container" and "the daemon is
-    # not answering", and those mean opposite things: only a daemon that
-    # answered can tell us the container is gone. Ask it directly before
-    # concluding anything — a stopped daemon must not evict a live collector.
-    if docker version > /dev/null 2>&1; then
-      OBSERVE_CONTAINER_STATE=stopped
-    fi
-    return 1
-  }
-  if [ "$out" = "true $instance" ]; then
-    OBSERVE_CONTAINER_STATE=running
-    return 0
-  fi
-  # Present but either not running, or running a different collector instance —
-  # in both cases the run this lock records is over.
-  OBSERVE_CONTAINER_STATE=stopped
-  return 1
-}
-
-# The runtime a lock was written by. Locks predating the docker runtime have no
-# `runtime` file at all, and those were always host processes.
-observe_lock_runtime() { # <lock-dir>
-  local lockdir=${1:-${OBSERVE_LOCK:-}} value
-  value=$(observe_read_line "$lockdir/runtime" 2>/dev/null || true)
-  printf '%s\n' "${value:-local}"
-}
-
-# True when the container recorded in <lock-dir> is still running this instance.
-observe_container_matches_lock() { # <lock-dir>
-  local lockdir=${1:-${OBSERVE_LOCK:-}} container instance
-  [ -n "$lockdir" ] || return 1
-  [ -d "$lockdir" ] || return 1
-  container=$(observe_read_line "$lockdir/container" 2>/dev/null || true)
-  instance=$(observe_read_line "$lockdir/instance-id" 2>/dev/null || true)
-  observe_container_state "$container" "$instance"
-}
-
 # True only when the process recorded in <lock-dir> is still that same process.
 #
 # Checks, in order: a usable recorded PID, that PID alive, the live identity
@@ -222,34 +163,16 @@ observe_signal_locked_process() { # <signal> [lock-dir]
   kill -"$signal" "$pid" 2>/dev/null
 }
 
-# True when the owner recorded in <lock-dir> — process or container — is still
-# live and still this instance. Every caller that asks "is there something here
-# to stop, restart, or wait for?" goes through this rather than assuming a PID.
+# True when the owner recorded in <lock-dir> is still live and still this
+# instance. Every caller that asks "is there something here to stop, restart, or
+# wait for?" goes through this rather than reading the PID itself.
 observe_owner_matches_lock() { # <lock-dir>
-  local lockdir=${1:-${OBSERVE_LOCK:-}}
-  case "$(observe_lock_runtime "$lockdir")" in
-    docker) observe_container_matches_lock "$lockdir" ;;
-    *) observe_process_matches_lock "$lockdir" ;;
-  esac
+  observe_process_matches_lock "${1:-${OBSERVE_LOCK:-}}"
 }
 
 # Ask the recorded owner to shut down — and only it. Identity is re-verified
-# first in both runtimes, so this can no more signal a reused PID than it can
-# stop a container that is no longer the collector this lock records.
-#
-# `docker stop` is the container's TERM: it sends SIGTERM to PID 1 and waits,
-# which is exactly the graceful path the collector's shutdown sequence expects.
+# first, so this can no more signal a reused PID than the primitive it delegates
+# to.
 observe_signal_locked_collector() { # <signal> [lock-dir]
-  local signal=${1:-TERM} lockdir=${2:-${OBSERVE_LOCK:-}} container
-  [ -n "$lockdir" ] || return 1
-  case "$(observe_lock_runtime "$lockdir")" in
-    docker)
-      [ "$signal" = TERM ] || return 1
-      observe_container_matches_lock "$lockdir" || return 1
-      container=$(observe_read_line "$lockdir/container" 2>/dev/null || true)
-      [ -n "$container" ] || return 1
-      docker stop --time "$OBSERVE_DOCKER_STOP_TIMEOUT" "$container" > /dev/null 2>&1
-      ;;
-    *) observe_signal_locked_process "$signal" "$lockdir" ;;
-  esac
+  observe_signal_locked_process "${1:-TERM}" "${2:-${OBSERVE_LOCK:-}}"
 }

@@ -91,17 +91,13 @@ echo "=== Running tests ==="
 npm test
 
 echo ""
-echo "=== Building Docker image ==="
-docker build -t agents-observe:local .
-
-echo ""
 echo "=== Running fresh install test ==="
-scripts/test-fresh-install.sh --skip-build
+scripts/test-fresh-install.sh
 
 if $DRY_RUN; then
   echo ""
   echo "=== Dry run complete ==="
-  echo "Changelog, version bumps, tests, and Docker build all passed."
+  echo "Changelog, version bumps, and tests all passed."
   echo "Modified files (not committed):"
   git status --short
   echo ""
@@ -126,5 +122,5 @@ git push origin main "$TAG"
 
 echo ""
 echo "=== Released $TAG ==="
-echo "GitHub Actions will build the Docker image and create the GitHub release."
+echo "GitHub Actions will create the GitHub release."
 echo "Watch: https://github.com/simple10/agents-observe/actions"

@@ -35,7 +35,13 @@ import { isDirectory, nowEpoch, pathMtime, readLine } from './paths'
 import { isPid, pidAlive, pidExecutable, pidHasMarker, pidIdentity } from './process-identity'
 import type { IdentityOptions } from './process-identity'
 
-/** Every file this module writes into a lock directory. */
+/**
+ * Every file a lock directory may contain. `runtime` and `container` are no
+ * longer written — they belong to a second collector runtime that no longer
+ * exists — but they stay on this list so that upgrading over a lock written by
+ * an older version can still `rmdir` it. Dropping them would strand such a lock
+ * forever: rmdir refuses a directory that is not empty.
+ */
 export const LOCK_FILES = [
   'pid',
   'pid-identity',
@@ -48,14 +54,6 @@ export const LOCK_FILES = [
   'container',
 ] as const
 
-/**
- * Which kind of thing a lock's owner is. `local` is a process on this host,
- * identified by PID identity; `docker` is the managed container, identified by
- * its name plus the instance id it was labelled with. Locks written before the
- * docker runtime existed have no `runtime` file and were always processes.
- */
-export type CollectorRuntime = 'local' | 'docker'
-
 export interface LockSnapshot {
   pid: string
   identity: string
@@ -64,8 +62,6 @@ export interface LockSnapshot {
   dataRoot: string
   instanceId: string
   startedAt: string
-  runtime: CollectorRuntime
-  container: string
 }
 
 export interface ClaimSpec {
@@ -74,8 +70,6 @@ export interface ClaimSpec {
   entrypoint: string
   dataRoot: string
   pid: number
-  runtime?: CollectorRuntime
-  container?: string
 }
 
 export interface LockOptions extends IdentityOptions {
@@ -85,11 +79,7 @@ export interface LockOptions extends IdentityOptions {
    * abandoned, so a competing acquirer cannot delete a lock mid-claim.
    */
   settleSeconds: number
-  /** The runtime the *caller* runs in. Defaults to `local`. */
-  runtime?: CollectorRuntime
-  /** The caller's container name, when it runs in one. */
-  containerName?: string
-  /** The caller's instance id — one collector *run*, not one container. */
+  /** The caller's instance id — one collector *run*. */
   instanceId?: string
 }
 
@@ -104,8 +94,6 @@ export function readLock(lockDir: string): LockSnapshot | null {
     dataRoot: readLine(`${lockDir}/data-root`),
     instanceId: readLine(`${lockDir}/instance-id`),
     startedAt: readLine(`${lockDir}/started-at`),
-    runtime: readLine(`${lockDir}/runtime`) === 'docker' ? 'docker' : 'local',
-    container: readLine(`${lockDir}/container`),
   }
 }
 
@@ -138,8 +126,6 @@ function writeDetails(spec: ClaimSpec, opts: LockOptions): boolean {
     writeFileSync(`${spec.lockDir}/entrypoint`, `${spec.entrypoint}\n`)
     writeFileSync(`${spec.lockDir}/data-root`, `${spec.dataRoot}\n`)
     writeFileSync(`${spec.lockDir}/instance-id`, `${spec.instanceId}\n`)
-    writeFileSync(`${spec.lockDir}/runtime`, `${spec.runtime ?? 'local'}\n`)
-    writeFileSync(`${spec.lockDir}/container`, `${spec.container ?? ''}\n`)
     writeFileSync(`${spec.lockDir}/started-at`, `${nowEpoch()}\n`)
     // Written last: the shell treats a lock with a PID but no identity as
     // "still being claimed", so identity is what completes the record.
@@ -232,31 +218,12 @@ export function processMatchesLock(lockDir: string, opts: LockOptions): boolean 
 
 /**
  * True when a lock directory exists but its recorded owner is provably gone.
- *
- * **Abandonment is only ever judged within one runtime.** A collector can only
- * apply the proof its own runtime gives it: a host process reads `/proc` for
- * PID identity, and a container can see neither the host's processes nor the
- * docker daemon. Judging across that boundary would mean calling an owner dead
- * because we cannot see it — which is how a data root ends up with two
- * collectors. A cross-runtime lock is therefore never abandoned here; the host
- * supervisor (`observe_lock_is_abandoned`), which can ask docker, resolves it.
- *
- * Within the docker runtime the proof is the container name: docker allows at
- * most one live container per name, so a collector running *as* that container
- * knows any earlier instance recorded under it has ended.
+ * The proof is PID identity: a live PID whose identity still matches what was
+ * recorded is the owner, and nothing else is. Age is never evidence.
  */
 export function lockIsAbandoned(lockDir: string, opts: LockOptions): boolean {
   const lock = readLock(lockDir)
   if (!lock) return false
-
-  const callerRuntime = opts.runtime ?? 'local'
-  if (lock.runtime !== callerRuntime) return false
-
-  if (lock.runtime === 'docker') {
-    if (!lock.container || !lock.instanceId) return !lockIsSettling(lockDir, opts)
-    if (lock.container !== (opts.containerName ?? '')) return false
-    return lock.instanceId !== opts.instanceId
-  }
 
   if (!isPid(lock.pid) || !lock.identity) {
     // An incomplete record: either a claim still in progress (leave it alone)

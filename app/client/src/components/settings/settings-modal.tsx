@@ -25,11 +25,10 @@ import {
 import { getServerHealth } from '@/lib/server-health'
 import { useDbStats } from '@/hooks/use-db-stats'
 import { formatBytes } from '@/lib/format-bytes'
-import { Database, Container, Monitor, X } from 'lucide-react'
+import { Database, X } from 'lucide-react'
 
 interface ServerInfo {
   dbPath: string
-  runtime: 'docker' | 'local'
 }
 
 export function SettingsModal() {
@@ -73,8 +72,7 @@ export function SettingsModal() {
       // opens settings, this is already cached.
       getServerHealth().then((data) => {
         if (data?.dbPath) {
-          const runtime: 'docker' | 'local' = data.runtime === 'docker' ? 'docker' : 'local'
-          setServerInfo({ dbPath: data.dbPath, runtime })
+          setServerInfo({ dbPath: data.dbPath })
         }
       })
     }
@@ -150,13 +148,6 @@ export function SettingsModal() {
         </Tabs>
         {serverInfo && (
           <div className="px-6 py-3 border-t text-[11px] text-muted-foreground/60 flex items-center gap-1.5">
-            {serverInfo.runtime === 'docker' ? (
-              <Container className="h-3 w-3 shrink-0" />
-            ) : (
-              <Monitor className="h-3 w-3 shrink-0" />
-            )}
-            <span className="shrink-0">{serverInfo.runtime === 'docker' ? 'Docker' : 'Local'}</span>
-            <span className="text-muted-foreground/30">|</span>
             <Database className="h-3 w-3 shrink-0" />
             <span className="truncate">{serverInfo.dbPath}</span>
             {dbStats.data && (

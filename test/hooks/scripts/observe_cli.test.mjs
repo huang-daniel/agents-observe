@@ -298,9 +298,8 @@ describe('observe_cli', () => {
             ok: true,
             id: 'agents-observe',
             version: '0.8.0',
-            runtime: 'docker',
             logLevel: 'debug',
-            dbPath: '/data/observe.db',
+            dbPath: '/home/me/.agents-observe/data/observe.db',
             activeConsumers: 1,
             activeClients: 0,
           },
@@ -314,7 +313,7 @@ describe('observe_cli', () => {
         })
         expect(code).toBe(0)
         expect(stdout).toContain('v0.8.0')
-        expect(stdout).toContain('Docker')
+        expect(stdout).toContain('/home/me/.agents-observe/data/observe.db')
       } finally {
         server.close()
       }

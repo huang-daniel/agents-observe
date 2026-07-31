@@ -19,11 +19,8 @@ const envKeys = [
   'AGENTS_OBSERVE_SERVER_PORT',
   'AGENTS_OBSERVE_API_BASE_URL',
   'AGENTS_OBSERVE_PROJECT_SLUG',
-  'AGENTS_OBSERVE_DOCKER_CONTAINER_NAME',
-  'AGENTS_OBSERVE_DOCKER_IMAGE',
   'AGENTS_OBSERVE_LOGS_DIR',
   'AGENTS_OBSERVE_LOG_LEVEL',
-  'AGENTS_OBSERVE_TEST_SKIP_PULL',
   'AGENTS_OBSERVE_LOCAL_DATA_ROOT',
   'AGENTS_OBSERVE_RUNTIME',
   'AGENTS_OBSERVE_DEV_CLIENT_PORT',
@@ -31,7 +28,6 @@ const envKeys = [
   'AGENTS_OBSERVE_NOTIFICATION_ON_EVENTS',
   'AGENTS_OBSERVE_BIND',
   'AGENTS_OBSERVE_CORS_ORIGINS',
-  'AGENTS_OBSERVE_SELINUX_RELABEL',
   'AGENTS_OBSERVE_DATA_ROOT',
   'AGENTS_OBSERVE_INSTANCE_ID',
 ]
@@ -89,22 +85,6 @@ describe('config', () => {
     expect(cfg.serverPort).toBe('8888')
   })
 
-  it('defaults containerName to agents-observe', async () => {
-    const cfg = await loadConfig()
-    expect(cfg.containerName).toBe('agents-observe')
-  })
-
-  it('reads AGENTS_OBSERVE_DOCKER_CONTAINER_NAME', async () => {
-    process.env.AGENTS_OBSERVE_DOCKER_CONTAINER_NAME = 'custom-container'
-    const cfg = await loadConfig()
-    expect(cfg.containerName).toBe('custom-container')
-  })
-
-  it('accepts containerName via overrides', async () => {
-    const cfg = await loadConfig({ containerName: 'override-container' })
-    expect(cfg.containerName).toBe('override-container')
-  })
-
   it('defaults API_ID to agents-observe', async () => {
     const cfg = await loadConfig()
     expect(cfg.API_ID).toBe('agents-observe')
@@ -122,9 +102,9 @@ describe('config', () => {
 
   // --- Runtime ---
 
-  it('defaults runtime to docker', async () => {
+  it('defaults runtime to local', async () => {
     const cfg = await loadConfig()
-    expect(cfg.runtime).toBe('docker')
+    expect(cfg.runtime).toBe('local')
   })
 
   it('reads AGENTS_OBSERVE_RUNTIME env var', async () => {
@@ -167,34 +147,6 @@ describe('config', () => {
     process.env.AGENTS_OBSERVE_CORS_ORIGINS = 'https://a.example,https://b.example'
     const cfg = await loadConfig()
     expect(cfg.corsOrigins).toBe('https://a.example,https://b.example')
-  })
-
-  // --- SELinux relabel (issue #20) ---
-
-  it('resolves selinuxRelabel to a boolean by default (auto-detect)', async () => {
-    const cfg = await loadConfig()
-    expect(typeof cfg.selinuxRelabel).toBe('boolean')
-  })
-
-  it('forces selinuxRelabel on via AGENTS_OBSERVE_SELINUX_RELABEL', async () => {
-    for (const v of ['1', 'true', 'on', 'yes']) {
-      process.env.AGENTS_OBSERVE_SELINUX_RELABEL = v
-      const cfg = await loadConfig()
-      expect(cfg.selinuxRelabel).toBe(true)
-    }
-  })
-
-  it('forces selinuxRelabel off via AGENTS_OBSERVE_SELINUX_RELABEL (overrides detection)', async () => {
-    for (const v of ['0', 'false', 'off']) {
-      process.env.AGENTS_OBSERVE_SELINUX_RELABEL = v
-      const cfg = await loadConfig()
-      expect(cfg.selinuxRelabel).toBe(false)
-    }
-  })
-
-  it('accepts selinuxRelabel via overrides', async () => {
-    expect((await loadConfig({ selinuxRelabel: 'on' })).selinuxRelabel).toBe(true)
-    expect((await loadConfig({ selinuxRelabel: 'off' })).selinuxRelabel).toBe(false)
   })
 
   // --- isPlugin ---
@@ -317,48 +269,6 @@ describe('config', () => {
     expect(cfg.clientPort).toBe('3000')
   })
 
-  // --- Docker image ---
-
-  it('constructs dockerImage from version', async () => {
-    const cfg = await loadConfig()
-    if (cfg.expectedVersion) {
-      expect(cfg.dockerImage).toBe(`ghcr.io/simple10/agents-observe:v${cfg.expectedVersion}`)
-    } else {
-      expect(cfg.dockerImage).toBe('ghcr.io/simple10/agents-observe:latest')
-    }
-  })
-
-  it('prefers AGENTS_OBSERVE_DOCKER_IMAGE env var', async () => {
-    process.env.AGENTS_OBSERVE_DOCKER_IMAGE = 'custom:image'
-    const cfg = await loadConfig()
-    expect(cfg.dockerImage).toBe('custom:image')
-  })
-
-  // --- Docker label ---
-
-  it('exposes dockerLabel with simple10 prefix', async () => {
-    const cfg = await loadConfig()
-    expect(cfg.dockerLabel).toBe('simple10-agents-observe.managed')
-  })
-
-  // --- Test skip pull ---
-
-  it('defaults testSkipPull to false', async () => {
-    const cfg = await loadConfig()
-    expect(cfg.testSkipPull).toBe(false)
-  })
-
-  it('sets testSkipPull true when AGENTS_OBSERVE_TEST_SKIP_PULL=1', async () => {
-    process.env.AGENTS_OBSERVE_TEST_SKIP_PULL = '1'
-    const cfg = await loadConfig()
-    expect(cfg.testSkipPull).toBe(true)
-  })
-
-  it('accepts testSkipPull via overrides', async () => {
-    const cfg = await loadConfig({ testSkipPull: true })
-    expect(cfg.testSkipPull).toBe(true)
-  })
-
   // --- API URL ---
 
   it('derives apiBaseUrl from serverPort', async () => {
@@ -471,29 +381,7 @@ describe('config', () => {
 })
 
 describe('getServerEnv', () => {
-  it('uses container paths for docker runtime', async () => {
-    const mod = await loadModule()
-    const cfg = mod.getConfig({ runtime: 'docker' })
-    const env = mod.getServerEnv(cfg)
-
-    expect(env.AGENTS_OBSERVE_SERVER_PORT).toBe('4981')
-    expect(env.AGENTS_OBSERVE_DB_PATH).toBe('/data/observe.db')
-    expect(env.AGENTS_OBSERVE_CLIENT_DIST_PATH).toBe('/app/client/dist')
-    expect(env.AGENTS_OBSERVE_RUNTIME).toBe('docker')
-    expect(env.AGENTS_OBSERVE_STORAGE_ADAPTER).toBe('sqlite')
-  })
-
-  it('sets HOST_DB_PATH to the host bind mount target in docker', async () => {
-    const mod = await loadModule()
-    const cfg = mod.getConfig({ runtime: 'docker' })
-    const env = mod.getServerEnv(cfg)
-
-    expect(env.AGENTS_OBSERVE_HOST_DB_PATH).toBe(`${cfg.dataDir}/observe.db`)
-    // Container-side DB_PATH is unchanged.
-    expect(env.AGENTS_OBSERVE_DB_PATH).toBe('/data/observe.db')
-  })
-
-  it('uses host paths for local runtime', async () => {
+  it('uses host paths for the local runtime', async () => {
     const mod = await loadModule()
     const cfg = mod.getConfig({ runtime: 'local' })
     const env = mod.getServerEnv(cfg)
@@ -504,9 +392,7 @@ describe('getServerEnv', () => {
     expect(env.AGENTS_OBSERVE_CLIENT_DIST_PATH).toContain('app/client/dist')
     expect(env.AGENTS_OBSERVE_CLIENT_DIST_PATH).toContain(cfg.installDir)
     expect(env.AGENTS_OBSERVE_RUNTIME).toBe('local')
-    // In local mode the server falls back to DB_PATH, so HOST_DB_PATH
-    // is left empty to keep the env minimal.
-    expect(env.AGENTS_OBSERVE_HOST_DB_PATH).toBe('')
+    expect(env.AGENTS_OBSERVE_STORAGE_ADAPTER).toBe('sqlite')
   })
 
   it('sets empty CLIENT_DIST_PATH and RUNTIME_DEV for dev runtime', async () => {
@@ -516,26 +402,20 @@ describe('getServerEnv', () => {
 
     expect(env.AGENTS_OBSERVE_SERVER_PORT).toBe(cfg.serverPort)
     expect(env.AGENTS_OBSERVE_CLIENT_DIST_PATH).toBe('')
-    expect(env.AGENTS_OBSERVE_RUNTIME).toBe('local')
+    expect(env.AGENTS_OBSERVE_RUNTIME).toBe('dev')
     expect(env.AGENTS_OBSERVE_RUNTIME_DEV).toBe('1')
     expect(env.AGENTS_OBSERVE_SHUTDOWN_DELAY_MS).toBe(String(cfg.shutdownDelayMs))
   })
 
   // --- Bind host + CORS passthrough (issue #22) ---
 
-  it('binds the container to 0.0.0.0 in docker (host -p enforces loopback)', async () => {
-    const mod = await loadModule()
-    const env = mod.getServerEnv(mod.getConfig({ runtime: 'docker' }))
-    expect(env.AGENTS_OBSERVE_BIND_HOST).toBe('0.0.0.0')
-  })
-
-  it('binds the configured host directly in local mode', async () => {
+  it('binds loopback by default', async () => {
     const mod = await loadModule()
     const env = mod.getServerEnv(mod.getConfig({ runtime: 'local' }))
     expect(env.AGENTS_OBSERVE_BIND_HOST).toBe('127.0.0.1')
   })
 
-  it('forwards AGENTS_OBSERVE_BIND to the local listen host', async () => {
+  it('forwards AGENTS_OBSERVE_BIND to the listen host', async () => {
     process.env.AGENTS_OBSERVE_BIND = '0.0.0.0'
     const mod = await loadModule()
     const env = mod.getServerEnv(mod.getConfig({ runtime: 'local' }))
@@ -544,20 +424,20 @@ describe('getServerEnv', () => {
 
   it('omits the CORS allowlist env when unset', async () => {
     const mod = await loadModule()
-    const env = mod.getServerEnv(mod.getConfig({ runtime: 'docker' }))
+    const env = mod.getServerEnv(mod.getConfig({ runtime: 'local' }))
     expect(env.AGENTS_OBSERVE_CORS_ORIGINS).toBeUndefined()
   })
 
   it('forwards the CORS allowlist env when set', async () => {
     process.env.AGENTS_OBSERVE_CORS_ORIGINS = 'https://a.example,https://b.example'
     const mod = await loadModule()
-    const env = mod.getServerEnv(mod.getConfig({ runtime: 'docker' }))
+    const env = mod.getServerEnv(mod.getConfig({ runtime: 'local' }))
     expect(env.AGENTS_OBSERVE_CORS_ORIGINS).toBe('https://a.example,https://b.example')
   })
 
   it('always includes log level and storage adapter', async () => {
     const mod = await loadModule()
-    for (const runtime of ['docker', 'local', 'dev']) {
+    for (const runtime of ['local', 'dev']) {
       const cfg = mod.getConfig({ runtime })
       const env = mod.getServerEnv(cfg)
       expect(env.AGENTS_OBSERVE_LOG_LEVEL).toBe(cfg.logLevel)
@@ -585,59 +465,17 @@ describe('getServerEnv — transcript-stats env vars', () => {
     delete process.env.AGENTS_OBSERVE_TRANSCRIPT_STATS
   })
 
-  it('omits transcript-stats env vars when feature explicitly disabled', async () => {
+  it('forwards the disabled flag when the feature is explicitly off', async () => {
     process.env.AGENTS_OBSERVE_TRANSCRIPT_STATS = '0'
     const mod = await loadModule()
-    const env = mod.getServerEnv(mod.getConfig({ runtime: 'docker' }))
+    const env = mod.getServerEnv(mod.getConfig({ runtime: 'local' }))
     expect(env.AGENTS_OBSERVE_TRANSCRIPT_STATS).toBe('0')
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_HOST_BASE).toBe('')
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_CONTAINER_BASE).toBe('')
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_CODEX_HOST_BASE).toBe('')
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_CODEX_CONTAINER_BASE).toBe('')
   })
 
   it('enables transcript-stats by default when env var is unset', async () => {
     const mod = await loadModule()
-    const env = mod.getServerEnv(mod.getConfig({ runtime: 'docker' }))
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_STATS).toBe('1')
-  })
-
-  it('populates per-class transcript-stats env vars when feature enabled in docker', async () => {
-    process.env.AGENTS_OBSERVE_TRANSCRIPT_STATS = '1'
-    const mod = await loadModule()
-    const env = mod.getServerEnv(mod.getConfig({ runtime: 'docker' }))
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_STATS).toBe('1')
-    // Defaults: ~/.claude/projects and ~/.codex/sessions.
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_HOST_BASE).toMatch(/\.claude\/projects$/)
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_CONTAINER_BASE).toBe('/host/.claude/projects')
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_CODEX_HOST_BASE).toMatch(/\.codex\/sessions$/)
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_CODEX_CONTAINER_BASE).toBe('/host/.codex/sessions')
-  })
-
-  it('omits transcript-stats bases in local mode even when enabled', async () => {
-    process.env.AGENTS_OBSERVE_TRANSCRIPT_STATS = '1'
-    const mod = await loadModule()
     const env = mod.getServerEnv(mod.getConfig({ runtime: 'local' }))
     expect(env.AGENTS_OBSERVE_TRANSCRIPT_STATS).toBe('1')
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_HOST_BASE).toBe('')
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_CONTAINER_BASE).toBe('')
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_CODEX_HOST_BASE).toBe('')
-    expect(env.AGENTS_OBSERVE_TRANSCRIPT_CODEX_CONTAINER_BASE).toBe('')
-  })
-
-  it('user-overrides host paths via env vars', async () => {
-    process.env.AGENTS_OBSERVE_TRANSCRIPT_STATS = '1'
-    process.env.AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_HOST_BASE = '/custom/claude'
-    process.env.AGENTS_OBSERVE_TRANSCRIPT_CODEX_HOST_BASE = '/custom/codex'
-    try {
-      const mod = await loadModule()
-      const env = mod.getServerEnv(mod.getConfig({ runtime: 'docker' }))
-      expect(env.AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_HOST_BASE).toBe('/custom/claude')
-      expect(env.AGENTS_OBSERVE_TRANSCRIPT_CODEX_HOST_BASE).toBe('/custom/codex')
-    } finally {
-      delete process.env.AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_HOST_BASE
-      delete process.env.AGENTS_OBSERVE_TRANSCRIPT_CODEX_HOST_BASE
-    }
   })
 })
 

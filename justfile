@@ -3,8 +3,7 @@
 #
 # AGENTS_OBSERVE_SERVER_PORT & AGENTS_OBSERVE_DEV_CLIENT_PORT are read from .env
 # Allows for overriding the default ports
-# Server port is used for both local dev & docker starts
-# Client port is only for local dev
+# Server port is used by the server; the client port is only for local dev
 
 set dotenv-load := true
 set export := true
@@ -22,19 +21,15 @@ codex_hooks_script := project_root / "scripts" / "codex-hooks.mjs"
 default:
     @just --list
 
-# ─── Docker ─────────────────────────────────────────────
+# ─── Server ─────────────────────────────────────────────
 
-# Build the Docker image locally
-build:
-    docker build -t agents-observe:local .
-
-# Start server (same path as plugin MCP)
+# Start the supervised collector (the same path the plugin's hooks use)
 start:
     node {{ cli_script }} start
     @just open
 
-# Start the server locally without docker
-start-local:
+# Start the server in the foreground (installs deps, builds the client)
+start-foreground:
     npm run start
 
 # Stop server
@@ -45,9 +40,9 @@ stop:
 restart:
     node {{ cli_script }} restart
 
-# View container logs (follow)
-logs:
-    node {{ cli_script }} logs -f
+# Tail the collector server log
+logs *args:
+    node {{ cli_script }} logs-server {{ args }}
 
 # ─── Development ─────────────────────────────────────────
 
@@ -60,10 +55,6 @@ dev:
 # Run all tests (server + client)
 test:
     npm test
-
-# Build the production image and run its shipped hook entrypoint for Claude and Codex.
-test-docker-hooks:
-    test/docker-hooks-smoke.sh
 
 # Send a test event to the server
 test-event:

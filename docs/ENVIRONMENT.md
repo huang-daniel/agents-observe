@@ -27,7 +27,7 @@ shell/TypeScript pairs.
 | `AGENTS_OBSERVE_NOTIFICATION_ON_EVENTS` | *(unset — defaults to `Notification`)* | Comma-separated hook events that trigger the notification bell. Empty string (`""`) disables bells entirely. Claude Code's `Notification` hook fires by default; Codex has no equivalent, so Codex users must opt in (e.g. set to `Stop` to fire on turn end). See [spec-configurable-notification-events.md](./plans/spec-configurable-notification-events.md). |
 | `AGENTS_OBSERVE_MAX_IMAGE_DATA_CHARS` | `50000` | Base64 image `tool_response` data longer than this many characters is replaced with `[REDACTED]` before storage. |
 | `AGENTS_OBSERVE_ALLOW_LOCAL_CALLBACKS` | `all` | Comma-separated allowlist of server-initiated callbacks the CLI will execute. `all` permits every known handler. |
-| `AGENTS_OBSERVE_API_BASE_URL` | *(derived from `AGENTS_OBSERVE_SERVER_PORT`)* | Full URL of the server API (e.g. `http://remote:4981/api`). Overrides the auto-started local Docker server. |
+| `AGENTS_OBSERVE_API_BASE_URL` | *(derived from `AGENTS_OBSERVE_SERVER_PORT`)* | Full URL of the server API (e.g. `http://remote:4981/api`). Overrides the auto-started local server. |
 | `AGENTS_OBSERVE_LOG_LEVEL` | `warn` | CLI log level: `error`, `warn`, `info`, `debug`, `trace`. |
 | `AGENTS_OBSERVE_LOGS_DIR` | `<data root>/logs` | Directory where the CLI writes logs. |
 | `AGENTS_OBSERVE_LOCAL_DATA_ROOT` | `$CLAUDE_PLUGIN_DATA` (plugin) / `~/.agents-observe` (else) | Root directory for the SQLite DB, logs, and server-port file. The DB lives at `<root>/data/observe.db`. |
@@ -40,8 +40,8 @@ Read by the API server in `app/server/src/config.ts`. When you start
 the server via the CLI (the normal path), these are populated
 automatically from the CLI config via `getServerEnv()`. When a hook
 auto-arms a local collector directly — bypassing the CLI —
-`hooks/scripts/supervision/observe-lifecycle.sh`'s `observe_spawn_collector`
-computes the local-mode defaults (`AGENTS_OBSERVE_DB_PATH`,
+`hooks/scripts/supervision/observe-lifecycle.sh`'s `observe_spawn_collector_local`
+computes the defaults (`AGENTS_OBSERVE_DB_PATH`,
 `AGENTS_OBSERVE_CLIENT_DIST_PATH`, `AGENTS_OBSERVE_BIND_HOST`) in shell so
 hook-spawned collectors match. Override them only when running the server
 directly.
@@ -49,10 +49,10 @@ directly.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `AGENTS_OBSERVE_SERVER_PORT` | `4981` | HTTP + WebSocket port the server listens on. |
-| `AGENTS_OBSERVE_BIND` | `127.0.0.1` | Host interface the server is published on. Loopback by default so the unauthenticated dashboard/WebSocket isn't exposed beyond this machine (issue #22). Set to `0.0.0.0` for LAN access. In docker it's the host side of the `-p` mapping; in local/dev it's the server's listen host. |
+| `AGENTS_OBSERVE_BIND` | `127.0.0.1` | Host interface the server is published on. Loopback by default so the unauthenticated dashboard/WebSocket isn't exposed beyond this machine (issue #22). Set to `0.0.0.0` for LAN access. Passed through to the server as its listen host. |
 | `AGENTS_OBSERVE_CORS_ORIGINS` | *(unset — loopback origins only)* | Comma-separated origin allowlist for the browser API **and the WebSocket handshake**. Unset allows only loopback origins (the client is served same-origin, so this covers normal use). `*` allows any origin (opt-in). A WebSocket request with no `Origin` header (non-browser client) is always allowed. |
-| `AGENTS_OBSERVE_BIND_HOST` | *(set by CLI)* | Internal: the actual listen host the server binds to. The CLI derives it from `AGENTS_OBSERVE_BIND` — `0.0.0.0` inside docker (the host `-p` mapping enforces the boundary), the configured bind host in local/dev. Don't set this manually. |
-| `AGENTS_OBSERVE_DB_PATH` | derived | Absolute path to the SQLite DB file. In Docker: `/data/observe.db`. Locally: computed as `<AGENTS_OBSERVE_LOCAL_DATA_ROOT>/data/observe.db`. |
+| `AGENTS_OBSERVE_BIND_HOST` | *(set by CLI)* | Internal: the actual listen host the server binds to, derived from `AGENTS_OBSERVE_BIND`. Don't set this manually. |
+| `AGENTS_OBSERVE_DB_PATH` | derived | Absolute path to the SQLite DB file. Computed as `<AGENTS_OBSERVE_LOCAL_DATA_ROOT>/data/observe.db`. |
 | `AGENTS_OBSERVE_STORAGE_ADAPTER` | `sqlite` | Storage backend. Only `sqlite` is supported today. |
 | `AGENTS_OBSERVE_CLIENT_DIST_PATH` | derived | Path to the built React client (`app/client/dist`). Empty in dev runtime (Vite serves the client). |
 | `AGENTS_OBSERVE_ALLOW_DB_RESET` | `backup` | Admin reset policy: `allow` (wipe without backup), `backup` (snapshot the DB then wipe), `deny` (refuse). |
@@ -72,28 +72,21 @@ set the flag below to `0` to disable.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `AGENTS_OBSERVE_TRANSCRIPT_STATS` | `1` | Enables the `/api/sessions/:id/transcript-stats` route and (in docker mode) bind-mounts each agent class's session dir read-only. Set to `0` to disable. Surfaced on `/api/health` as `transcriptStatsEnabled` so the client can skip the round-trip when off. |
-| `AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_HOST_BASE` | `~/.claude/projects` | Host path to Claude Code's session jsonls. Override when Claude is installed in a non-standard location. |
-| `AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_CONTAINER_BASE` | `/host/.claude/projects` | Fixed container-side mount point for the Claude bind mount. Rarely needs overriding — the server's path resolver looks for exactly this prefix. |
-| `AGENTS_OBSERVE_TRANSCRIPT_CODEX_HOST_BASE` | `~/.codex/sessions` | Host path to Codex's rollout jsonls. Override when Codex is installed in a non-standard location. |
-| `AGENTS_OBSERVE_TRANSCRIPT_CODEX_CONTAINER_BASE` | `/host/.codex/sessions` | Fixed container-side mount point for the Codex bind mount. |
+| `AGENTS_OBSERVE_TRANSCRIPT_STATS` | `1` | Enables the `/api/sessions/:id/transcript-stats` route. Set to `0` to disable. Surfaced on `/api/health` as `transcriptStatsEnabled` so the client can skip the round-trip when off. |
 
-In `docker` runtime the CLI populates these from the resolved host paths and mounts each directory read-only. In `local` / `dev` runtime the server reads transcripts directly from the host paths, so the `_CONTAINER_BASE` pair is left empty. Missing host directories are silently skipped — a user without Codex installed doesn't need to clear the codex env vars.
+The server reads each session's `transcript_path` straight off the host filesystem. A missing transcript is reported as `file_not_found` rather than failing the request — a user without Codex installed needs no configuration at all.
 
 ---
 
-## Docker / runtime selection
+## Runtime selection
 
-Controls where and how the server runs.
+Controls how the server runs.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `AGENTS_OBSERVE_RUNTIME` | `docker` | How to run the server: `docker` (container), `local` (node subprocess), `dev` (vite dev server + local node). |
+| `AGENTS_OBSERVE_RUNTIME` | `local` | How to run the server: `local` (node subprocess) or `dev` (vite dev server + local node). |
 | `AGENTS_OBSERVE_RUNTIME_DEV` | *(set by CLI)* | Internal flag (`1` or empty) so the server knows it's running under `dev`. Don't set this manually. |
 | `AGENTS_OBSERVE_DEV_CLIENT_PORT` | `5174` | Port the Vite dev server listens on in `dev` runtime. |
-| `AGENTS_OBSERVE_DOCKER_IMAGE` | `ghcr.io/simple10/agents-observe:v<version>` | Override the Docker image tag. Useful for testing local builds. |
-| `AGENTS_OBSERVE_DOCKER_CONTAINER_NAME` | `agents-observe` | Name of the managed Docker container. |
-| `AGENTS_OBSERVE_SELINUX_RELABEL` | `auto` | Whether docker bind mounts carry the SELinux `z` relabel option so the container can access them on SELinux hosts (fixes `SQLITE_CANTOPEN` on startup — issue #20). `auto` detects SELinux via `/sys/fs/selinux` (never emitted on non-SELinux systems or Docker Desktop/Mac/Windows/WSL). Set `off` to disable (e.g. to avoid relabeling `~/.claude`/`~/.codex` transcript dirs), or `on` to force. |
 
 ---
 
@@ -117,12 +110,9 @@ the second exits `3`. Give each a different `AGENTS_OBSERVE_DATA_ROOT` (or
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `AGENTS_OBSERVE_COLLECTOR_ENTRYPOINT` | *(empty)* | Optional executable the supervisor arm starts instead of the bundled Node entrypoint. Primarily useful for integration harnesses. |
-| `AGENTS_OBSERVE_COLLECTOR_RUNTIME` | `auto` | Which runtime the collector is supervised as: `local` (a host process) or `docker` (the managed container). `auto` picks `local` when `app/server/node_modules` exists and `docker` otherwise. See [collector-supervision.md](./collector-supervision.md#two-collector-runtimes). |
-| `AGENTS_OBSERVE_COLLECTOR_CONTAINER` | *(empty)* | Internal: the container's own name, passed in because a container cannot discover it. Set by `getServerEnv()`/docker-compose, not by users — see `AGENTS_OBSERVE_DOCKER_CONTAINER_NAME` above to change the name itself. |
-| `AGENTS_OBSERVE_DOCKER_INSTANCE_LABEL` | `simple10-agents-observe.instance` | Label the container carries its collector instance id under. Reading it back is how the host proves a running container is *this* collector run. |
-| `AGENTS_OBSERVE_DOCKER_START_TIMEOUT` | `180` | Seconds the supervisor waits for a container start to confirm healthy. Larger than the local timeout because a first start pulls an image. |
-| `AGENTS_OBSERVE_DOCKER_STOP_TIMEOUT` | `10` | Seconds `docker stop` gives the collector to shut down gracefully before killing it. |
-| `AGENTS_OBSERVE_INSTANCE_ID` | *(a fresh UUID)* | Pins the instance id for one collector run. The supervisor sets this when it starts the container so it can recognise the run afterwards. |
+| `AGENTS_OBSERVE_NPM` | `npm` | The package manager the bootstrap install runs. Override on a host where npm is named or installed differently. |
+| `AGENTS_OBSERVE_INSTALL_TIMEOUT` | `300` | Seconds each bootstrap install (`npm ci` / `npm install`, then the client build) is given on the first start of a source-only checkout. Applied via `timeout` where the host has it. See [collector-supervision.md](./collector-supervision.md#one-collector-runtime). |
+| `AGENTS_OBSERVE_INSTANCE_ID` | *(a fresh UUID)* | Pins the instance id for one collector run. |
 
 ---
 
@@ -132,7 +122,6 @@ Rarely user-set.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `AGENTS_OBSERVE_TEST_SKIP_PULL` | *(unset)* | When `1`, skips `docker pull` in the fresh-install test harness. Not for normal use. |
 | `CLAUDE_PLUGIN_DATA` | *(set by Claude Code)* | The plugin data directory path; set by the Claude Code plugin loader. The CLI checks for its presence to detect plugin mode. |
 
 ---
@@ -143,7 +132,7 @@ Rarely user-set.
 - **Plugin installs**: your shell profile (`.zshrc`, `.bashrc`) or the
   Claude Code plugin config.
 - **Remote / standalone server**: wherever you launch the server
-  process — shell, systemd unit, Docker compose, etc.
+  process — shell, systemd unit, etc.
 
 Add new variables to both this doc and the relevant config module:
 `hooks/scripts/lib/config.mjs` for CLI-read vars, `app/server/src/config.ts`

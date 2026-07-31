@@ -1,61 +1,35 @@
 #!/bin/bash
 # Fresh install test harness — entrypoint (runs inside test container)
-# Starts inner dockerd, loads pre-built server image, runs claude against
-# the plugin, runs verification checks, and prints a full diagnostic dump.
+#
+# Runs the real claude CLI against a source-only copy of the plugin — no
+# app/server/node_modules, no built dashboard — and verifies that the hooks
+# bootstrap the collector from that state on their own.
 
 set -uo pipefail
+
+TEST_USER=node
+TEST_HOME=/home/node
 
 echo "=== Fresh install test harness — entrypoint starting ==="
 echo "Container: $(hostname)"
 echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 echo ""
 
-# --- Start inner dockerd -----------------------------------------------
-echo "=== Starting inner dockerd ==="
-dockerd-entrypoint.sh >/var/log/dockerd.log 2>&1 &
-DOCKERD_PID=$!
-
-echo "Waiting for dockerd (pid $DOCKERD_PID) to become responsive..."
-for i in $(seq 1 60); do
-  if docker info >/dev/null 2>&1; then
-    echo "dockerd is up after ${i}s"
-    break
+# --- Prove the checkout really is dependency-free -----------------------
+# The whole point of the harness. If the build context ever starts carrying
+# node_modules or a built dashboard, every check below passes for the wrong
+# reason, so fail loudly here instead.
+echo "=== Confirming a source-only checkout ==="
+PRISTINE=true
+for path in /plugin/app/server/node_modules /plugin/app/client/node_modules /plugin/app/client/dist; do
+  if [ -e "$path" ]; then
+    echo "FATAL: $path exists — the build context is not a fresh install."
+    echo "       Check .dockerignore."
+    PRISTINE=false
   fi
-  sleep 1
 done
-
-if ! docker info >/dev/null 2>&1; then
-  echo "FATAL: dockerd did not become responsive within 60 seconds"
-  echo ""
-  echo "--- /var/log/dockerd.log (tail) ---"
-  tail -n 50 /var/log/dockerd.log || true
-  exit 1
-fi
-echo ""
-
-# --- Load pre-built server image from tarball --------------------------
-echo "=== Loading server image from tarball ==="
-if [ ! -f /server-image.tar ]; then
-  echo "FATAL: /server-image.tar not found (the driver script must mount it)"
-  exit 1
-fi
-
-docker load -i /server-image.tar
-echo ""
-
-if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q '^agents-observe:local$'; then
-  echo "FATAL: agents-observe:local not present in inner dockerd after load"
-  docker images
-  exit 1
-fi
-echo "Server image loaded successfully"
-echo ""
-
-# --- Configure plugin to use loaded image ------------------------------
-export AGENTS_OBSERVE_DOCKER_IMAGE=agents-observe:local
-export AGENTS_OBSERVE_TEST_SKIP_PULL=1
-echo "AGENTS_OBSERVE_DOCKER_IMAGE=$AGENTS_OBSERVE_DOCKER_IMAGE"
-echo "AGENTS_OBSERVE_TEST_SKIP_PULL=$AGENTS_OBSERVE_TEST_SKIP_PULL"
+$PRISTINE || exit 1
+echo "no server deps, no client deps, no built dashboard — as a marketplace install ships"
 echo ""
 
 # --- Set CLAUDE_PLUGIN_ROOT ---------------------------------------------
@@ -69,28 +43,23 @@ export CLAUDE_PLUGIN_ROOT=/plugin
 echo "CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT"
 echo ""
 
-# --- Run claude as non-root user --------------------------------------
+# --- Run claude as a non-root user --------------------------------------
 # Claude CLI refuses --permission-mode bypassPermissions as root.
-# Run as testuser, passing through env vars it needs.
-echo "=== Running claude -p ... (as testuser) ==="
+echo "=== Running claude -p ... (as $TEST_USER) ==="
 CLAUDE_STDOUT=/tmp/claude.stdout
 CLAUDE_STDERR=/tmp/claude.stderr
 CLAUDE_DEBUG_LOG=/tmp/claude-debug.log
 set +e
-su -s /bin/bash testuser -c "
+su -s /bin/bash "$TEST_USER" -c "
+  export HOME='$TEST_HOME'
   export CLAUDE_CODE_OAUTH_TOKEN='$CLAUDE_CODE_OAUTH_TOKEN'
-  export AGENTS_OBSERVE_DOCKER_IMAGE='$AGENTS_OBSERVE_DOCKER_IMAGE'
-  export AGENTS_OBSERVE_TEST_SKIP_PULL='$AGENTS_OBSERVE_TEST_SKIP_PULL'
   export AGENTS_OBSERVE_LOG_LEVEL='${AGENTS_OBSERVE_LOG_LEVEL:-trace}'
   export AGENTS_OBSERVE_PROJECT_SLUG='claude-test'
-  # The plugin now publishes its server container on 127.0.0.1 by default
-  # (issue #22). Inside this dind container that binds the dind loopback, so
-  # the host port-forward into the dind eth0 (UI_PORT in the driver script)
-  # cannot reach it: the dashboard is unreachable from the host for the
-  # manual UI check, though curl to 127.0.0.1:4981 still works from inside
-  # the dind. Publish on all interfaces so the forward chain works. Safe:
-  # this dind container is the isolation boundary, not a shared host.
-  export AGENTS_OBSERVE_BIND=0.0.0.0
+  # The server binds loopback by default (issue #22). Inside this container
+  # that makes the dashboard unreachable from the host port-forward used for
+  # the manual UI check, so publish on all interfaces. Safe: the container is
+  # the isolation boundary, not a shared host.
+  export AGENTS_OBSERVE_BIND='0.0.0.0'
   export CLAUDE_PLUGIN_ROOT='$CLAUDE_PLUGIN_ROOT'
   claude \
     --plugin-dir /plugin \
@@ -107,6 +76,19 @@ CLAUDE_EXIT=$?
 echo "claude exit code: $CLAUDE_EXIT"
 echo ""
 
+# The bootstrap install runs while the start lock is held, and the first hook
+# event is what triggers it. `claude -p` can exit well before that finishes, so
+# give the collector a bounded window to come up rather than racing it.
+echo "=== Waiting for the collector to finish bootstrapping ==="
+for i in $(seq 1 300); do
+  if curl -sf http://127.0.0.1:4981/api/health >/dev/null 2>&1; then
+    echo "server answered after ${i}s"
+    break
+  fi
+  sleep 1
+done
+echo ""
+
 # --- Verification phase -------------------------------------------------
 echo "=== Running verification checks ==="
 CHECK_1_RESULT="FAIL"; CHECK_1_DETAIL=""
@@ -115,23 +97,25 @@ CHECK_3_RESULT="FAIL"; CHECK_3_DETAIL=""
 CHECK_4_CLI_COUNT=0
 SUPERVISION_STATUS="(not collected)"
 
-# Check 1: inner agents-observe container exists and is running
-CONTAINER_STATUS="$(docker ps -a --filter name=agents-observe --format '{{.Status}}' | head -1)"
-if [ -n "$CONTAINER_STATUS" ] && echo "$CONTAINER_STATUS" | grep -qi '^up'; then
+# Check 1: the collector installed its own dependencies.
+#
+# This is the check that replaces "an agents-observe container is running": a
+# marketplace install ships source only, so a running collector means the
+# bootstrap in observe-lifecycle.sh did its job.
+if [ -d /plugin/app/server/node_modules ]; then
   CHECK_1_RESULT="PASS"
-  CHECK_1_DETAIL="$CONTAINER_STATUS"
+  CHECK_1_DETAIL="app/server/node_modules present ($(find /plugin/app/server/node_modules -maxdepth 1 -mindepth 1 | wc -l | tr -d ' ') entries)"
 else
-  CHECK_1_DETAIL="status='$CONTAINER_STATUS' (expected 'Up ...')"
+  CHECK_1_DETAIL="app/server/node_modules still missing — the bootstrap install did not run or failed"
 fi
 
 # Check 2: the server is not merely answering — it is a supervised collector.
 #
 # `ok:true` at the expected version used to be the whole check, and that is
-# exactly how source/image drift slipped through: a published image that
-# predates collector supervision serves this endpoint perfectly while never
-# claiming the lock or publishing a heartbeat, so the hooks can never confirm
-# it. The collector block is the capability evidence; assert it here, where the
-# real installed plugin meets the real image.
+# exactly how source drift slipped through: a server that predates collector
+# supervision serves this endpoint perfectly while never claiming the lock or
+# publishing a heartbeat, so the hooks can never confirm it. The collector block
+# is the capability evidence.
 EXPECTED_VERSION="$(tr -d '[:space:]' < /plugin/VERSION 2>/dev/null || true)"
 HEALTH_BODY="$(curl -sf http://127.0.0.1:4981/api/health 2>/tmp/curl-health.err || true)"
 if [ -z "$HEALTH_BODY" ] || ! echo "$HEALTH_BODY" | jq -e '.ok == true' >/dev/null 2>&1; then
@@ -140,13 +124,13 @@ elif [ -n "$EXPECTED_VERSION" ] &&
   ! echo "$HEALTH_BODY" | jq -e --arg v "$EXPECTED_VERSION" '.version == $v' >/dev/null 2>&1; then
   CHECK_2_DETAIL="version mismatch: served $(echo "$HEALTH_BODY" | jq -r '.version') expected $EXPECTED_VERSION"
 elif ! echo "$HEALTH_BODY" | jq -e '.collector != null' >/dev/null 2>&1; then
-  CHECK_2_DETAIL="incompatible-collector: v$(echo "$HEALTH_BODY" | jq -r '.version') serves /api/health but exposes no collector block — this image predates collector supervision"
+  CHECK_2_DETAIL="incompatible-collector: v$(echo "$HEALTH_BODY" | jq -r '.version') serves /api/health but exposes no collector block"
 elif ! echo "$HEALTH_BODY" | jq -e '.collector.status == "healthy"' >/dev/null 2>&1; then
   CHECK_2_DETAIL="collector $(echo "$HEALTH_BODY" | jq -c '{status: .collector.status, reason: .collector.reason}')"
 else
   CHECK_2_RESULT="PASS"
   CHECK_2_DETAIL="$(echo "$HEALTH_BODY" |
-    jq -c '{ok, version, runtime, collector: (.collector | {instanceId, dataRoot, status})}')"
+    jq -c '{ok, version, collector: (.collector | {instanceId, dataRoot, status})}')"
 fi
 
 # Check 3: at least one session with at least one event captured
@@ -164,10 +148,7 @@ else
 fi
 
 # Check 4 (soft): grep ERROR lines in cli.log
-# Scope to /plugin/data — the only place the current run writes logs.
-# A blanket `find /` also picks up stale logs baked into the image from
-# host-side worktrees, which pollutes counts and the diagnostic dump.
-CLI_LOG_FILES="$(find /plugin/data -type f -name 'cli.log' 2>/dev/null)"
+CLI_LOG_FILES="$(find "$TEST_HOME/.agents-observe" /plugin/data -type f -name 'cli.log' 2>/dev/null)"
 if [ -n "$CLI_LOG_FILES" ]; then
   CHECK_4_CLI_COUNT="$(grep -c 'ERROR' $CLI_LOG_FILES 2>/dev/null | awk -F: '{s+=$NF} END {print s+0}')"
 fi
@@ -204,34 +185,22 @@ else
 fi
 echo ""
 
-echo "=== docker state (inside test container) ==="
-echo "--- docker ps -a ---"
-docker ps -a
-echo ""
-echo "--- docker images ---"
-docker images
-echo ""
-
-echo "=== docker logs agents-observe (inner server container) ==="
-if docker ps -a --format '{{.Names}}' | grep -q '^agents-observe$'; then
-  docker logs agents-observe 2>&1 || true
-else
-  echo "(agents-observe container not present)"
-fi
-echo ""
-
-# The collector's own account of itself: what the supervisor decided, and
-# whether events are draining out of the durable spool. This is where a
-# capture failure shows up first.
+# The collector's own account of itself: what the supervisor decided, whether
+# the bootstrap install succeeded, and whether events are draining out of the
+# durable spool. This is where a capture failure shows up first.
 echo "=== collector supervision ==="
-SUPERVISION_STATUS="$(/plugin/hooks/scripts/supervision/observe-health.sh 2>&1 || true)"
+SUPERVISION_STATUS="$(su -s /bin/bash "$TEST_USER" -c "HOME='$TEST_HOME' /plugin/hooks/scripts/supervision/observe-health.sh" 2>&1 || true)"
 echo "$SUPERVISION_STATUS"
-for root in /home/testuser/.agents-observe /root/.agents-observe; do
+for root in "$TEST_HOME/.agents-observe" /root/.agents-observe; do
   if [ -d "$root/runtime" ]; then
     echo "--- $root/runtime ---"
     find "$root/runtime" -maxdepth 3 2>/dev/null | head -40 || true
     echo "--- $root/runtime/collector-lifecycle.log ---"
     tail -n 40 "$root/runtime/collector-lifecycle.log" 2>/dev/null || true
+    echo "--- $root/runtime/collector-install.log (tail) ---"
+    tail -n 40 "$root/runtime/collector-install.log" 2>/dev/null || echo "(no install log)"
+    echo "--- $root/runtime/collector.log (tail) ---"
+    tail -n 40 "$root/runtime/collector.log" 2>/dev/null || echo "(no collector log)"
   fi
 done
 echo ""
@@ -251,7 +220,7 @@ echo ""
 # sometimes debug logs) under ~/.claude. Dump any log files it left plus
 # a listing so plugin/hook loading errors aren't silent.
 echo "=== claude internal state (~/.claude) ==="
-for home in /home/testuser /root; do
+for home in "$TEST_HOME" /root; do
   if [ -d "$home/.claude" ]; then
     echo "--- $home/.claude (top-level listing) ---"
     find "$home/.claude" -maxdepth 3 -type f 2>/dev/null | head -40 || true
@@ -271,13 +240,15 @@ done
 echo ""
 
 echo "=== verification results ==="
-echo "1. Inner container exists: $CHECK_1_RESULT — $CHECK_1_DETAIL"
+echo "1. Bootstrap install ran:  $CHECK_1_RESULT — $CHECK_1_DETAIL"
 echo "2. Server health:          $CHECK_2_RESULT — $CHECK_2_DETAIL"
 echo "3. Events captured:        $CHECK_3_RESULT — $CHECK_3_DETAIL"
 echo "4. cli.log ERROR lines:    $CHECK_4_CLI_COUNT"
-   echo "   Collector supervision:  $SUPERVISION_STATUS"
+echo "   Collector supervision:  $SUPERVISION_STATUS"
 
-# Check 5 (soft): UI HTML loads and references valid assets
+# Check 5 (soft): UI HTML loads and references valid assets. This is also the
+# only check that covers the client half of the bootstrap — the dashboard is a
+# build artifact, so a fresh install has to build it before there is any UI.
 CHECK_5_RESULT="SKIP"
 CHECK_5_DETAIL=""
 UI_HTML="$(curl -sf http://127.0.0.1:4981/ 2>/dev/null || true)"
@@ -330,10 +301,6 @@ if [ "${AGENTS_OBSERVE_TEST_KEEP_ALIVE:-}" = "1" ]; then
     echo "  docker exec -it \$(hostname) bash"
   fi
   echo ""
-  if docker ps -a --format '{{.Names}}' | grep -q '^agents-observe$'; then
-    echo "=== Following inner server logs ==="
-    docker logs -f agents-observe 2>&1 &
-  fi
   sleep infinity
 fi
 

@@ -18,9 +18,9 @@ Agents Observe dashboard and server management.
 - `/observe start` — Start the server
 - `/observe stop` — Stop the server
 - `/observe restart` — Restart the server
-- `/observe logs-server` — Show recent Docker container logs
+- `/observe logs-server` — Show recent collector server logs
 - `/observe logs-cli` — Tail the local cli.log file
-- `/observe debug` — Diagnose server issues (health, collector supervision, docker logs, cli.log)
+- `/observe debug` — Diagnose server issues (health, collector supervision, server logs, cli.log)
 
 ## Instructions
 
@@ -103,7 +103,7 @@ Opens the current session's stats modal in the dashboard, using a deep-link URL.
    ```bash
    scripts/cli.sh logs-server -n 50
    ```
-2. Show the output to the user. Do NOT use `-f` (follow) — it would hang.
+2. Show the output to the user.
 
 ### /observe logs-cli
 
@@ -122,7 +122,7 @@ Run these checks in sequence. Read each output before running the next — use w
    scripts/cli.sh health
    ```
 
-2. **Docker container logs (last 20 lines):**
+2. **Collector server logs (last 20 lines):**
    ```bash
    scripts/cli.sh logs-server -n 20
    ```
@@ -142,7 +142,7 @@ Run these checks in sequence. Read each output before running the next — use w
 
 5. **Analyze the results** and tell the user:
    - Is the server running? What version?
-   - Are there errors in the docker logs? (look for crash loops, port conflicts, DB errors)
+   - Are there errors in the server log? (look for crash loops, port conflicts, DB errors)
    - What does collector supervision report, and does the reason explain the symptom?
    - Are there errors in cli.log? (look for ECONNREFUSED, hook delivery failures)
    - Is the durable spool draining? A growing `<data root>/runtime/spool/pending` with no healthy

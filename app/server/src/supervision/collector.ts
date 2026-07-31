@@ -26,7 +26,7 @@ import {
   removeLock,
   tryClaimLock,
 } from './lock'
-import type { CollectorRuntime, LockOptions } from './lock'
+import type { LockOptions } from './lock'
 import {
   alignOwnerWithDataRoot,
   ensureRuntimeDir,
@@ -72,10 +72,6 @@ export interface SupervisionOptions {
   graceSeconds?: number
   settleSeconds?: number
   procRoot?: string
-  /** Which runtime this collector is supervised as. Defaults to the config. */
-  runtime?: CollectorRuntime
-  /** This collector's container name, when it runs as the managed container. */
-  containerName?: string
   /** Sampled on every heartbeat tick. Defaults to "everything is fine". */
   probe?: () => Promise<CollectorProbe> | CollectorProbe
   /** Set the OS process title to the entrypoint marker. Off in tests. */
@@ -129,16 +125,12 @@ export interface CollectorSupervision {
 
 function lockOptions(
   opts: Required<Pick<SupervisionOptions, 'procRoot' | 'settleSeconds'>> & {
-    runtime: CollectorRuntime
-    containerName: string
     instanceId: string
   },
 ): LockOptions {
   return {
     procRoot: opts.procRoot,
     settleSeconds: opts.settleSeconds,
-    runtime: opts.runtime,
-    containerName: opts.containerName,
     instanceId: opts.instanceId,
   }
 }
@@ -161,9 +153,7 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
     config.supervision.homeDir ? `${config.supervision.homeDir}/.agents-observe` : undefined,
   ])
   const paths = runtimePaths(dataRoot)
-  const runtime = options.runtime ?? config.supervision.collectorRuntime
-  const containerName = options.containerName ?? config.supervision.containerName
-  const locking = lockOptions({ procRoot, settleSeconds, runtime, containerName, instanceId })
+  const locking = lockOptions({ procRoot, settleSeconds, instanceId })
   const startedAt = nowEpoch()
 
   let timer: ReturnType<typeof setInterval> | null = null
@@ -199,8 +189,6 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
       entrypoint,
       dataRoot,
       pid,
-      runtime,
-      container: containerName,
     }
 
     if (tryClaimLock(spec, locking)) return alignOwnership()
@@ -220,11 +208,10 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
   /**
    * Keep supervision state owned by whoever owns the data root.
    *
-   * The managed container runs as root while the hooks that share this data
-   * root run as the user. Without this, the lock the container writes is a
-   * root-owned directory inside a user-owned tree, and the host supervisor can
-   * never reclaim it once the container is gone — `rmdir` needs write access to
-   * the lock directory itself. A no-op wherever the two already agree.
+   * A collector started as root writes a root-owned lock directory inside a
+   * user-owned tree, and the user's supervisor can never reclaim it once that
+   * collector is gone — `rmdir` needs write access to the lock directory
+   * itself. A no-op wherever the two identities already agree.
    */
   function alignOwnership(): void {
     alignOwnerWithDataRoot(paths.lockDir, dataRoot, LOCK_FILES)

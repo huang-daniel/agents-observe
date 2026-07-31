@@ -4,13 +4,12 @@
 // Thin dispatcher — command implementations live in lib/.
 
 import { createInterface } from 'node:readline'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { getConfig } from './lib/config.mjs'
 import { getJson } from './lib/http.mjs'
 import { createLogger } from './lib/logger.mjs'
-import { startServer, stopServer } from './lib/docker.mjs'
 import { removeDatabase } from './lib/fs.mjs'
 import { buildHookEnvelope, hookCommand, hookSyncCommand } from './lib/hooks.mjs'
 
@@ -29,7 +28,7 @@ switch (cliArgs.commands[0] || 'help') {
     console.log('  stop:            Stop the server')
     console.log('  restart:         Restart the server')
     console.log('  db-reset:        Delete the SQLite database [--force to skip confirmation]')
-    console.log('  logs-server:     Show Docker container logs (passthrough, e.g. -f, -n 100)')
+    console.log('  logs-server:     Tail the collector server log [-n N] (default 20 lines)')
     console.log('  logs-cli [-n N]: Tail the local cli.log file (default 20 lines)')
     process.exit(0)
   case 'hook':
@@ -51,16 +50,16 @@ switch (cliArgs.commands[0] || 'help') {
     stopCommand()
     break
   case 'restart':
-    startCommand('Restarting server...')
+    startCommand('restart', 'Restarting server...')
     break
   case 'db-reset':
     dbResetCommand()
     break
   case 'logs-server':
-    logsServerCommand()
+    logsFileCommand(config.collectorLogFile)
     break
   case 'logs-cli':
-    logsFileCommand('cli.log')
+    logsFileCommand(resolve(config.logsDir, 'cli.log'))
     break
   default:
     console.error(`Unknown command: ${cliArgs.commands[0]}`)
@@ -80,8 +79,6 @@ async function healthCommand(exit = true) {
   const result = await getJson(healthUrl, { log })
   if (result.status === 200 && result.body?.ok) {
     const b = result.body
-    const isDocker = b.runtime === 'docker'
-    const runtime = isDocker ? `Docker` : 'local server'
 
     console.log(`Raw ${healthUrl} response:`)
     console.log(JSON.stringify(b, null, 2))
@@ -96,17 +93,12 @@ async function healthCommand(exit = true) {
       }`,
     )
     console.log('')
-    console.log(`Agents Observe Server (${runtime}):`)
+    console.log('Agents Observe Server:')
     console.log(`  Version: v${b.version || 'unknown'}`)
     console.log(`  Dashboard: ${config.baseOrigin}`)
     console.log(`  API: ${config.apiBaseUrl}`)
-    console.log(`  Runtime: ${runtime}`)
-    if (isDocker) {
-      console.log(`  Container Name: ${config.containerName}`)
-      console.log(`  Image: ${config.dockerImage}`)
-    }
-    // Always the host-side path (server returns hostDbPath as dbPath).
-    console.log(`  Database: ${b.dbPath || 'unknown'}${isDocker ? ' (bind mounted)' : ''}`)
+    console.log(`  Database: ${b.dbPath || 'unknown'}`)
+    console.log(`  Server Log: ${config.collectorLogFile}`)
     console.log(`  Log Level: ${b.logLevel || 'unknown'}`)
 
     if (config.expectedVersion && b.version && config.expectedVersion !== b.version) {
@@ -127,22 +119,41 @@ async function healthCommand(exit = true) {
   }
 }
 
-async function startCommand(msg = 'Starting server...') {
-  log.info(msg)
-  const actualPort = await startServer(config, log)
-  if (actualPort) {
-    await healthCommand(false)
-    console.log(`\nServer started on port ${actualPort}`)
-    console.log(`  Dashboard: http://127.0.0.1:${actualPort}`)
-  } else {
-    console.error('Failed to start server')
-    process.exit(1)
-  }
+/**
+ * Start (or restart) the collector.
+ *
+ * The supervisor arm is the one implementation of "start the collector" —
+ * lock, spawn, confirm — and this command drives it rather than reimplementing
+ * any of it. See docs/collector-supervision.md.
+ */
+function runSupervisor(action) {
+  const script =
+    action === 'stop'
+      ? resolve(config.installDir, 'hooks/scripts/supervision/observe-stop.sh')
+      : resolve(config.installDir, 'hooks/scripts/supervision/observe-arm.sh')
+  return spawnSync('bash', [script, ...(action === 'stop' ? [] : [action])], {
+    stdio: 'inherit',
+    env: { ...process.env, AGENTS_OBSERVE_DATA_ROOT: config.supervisionDataRoot },
+  })
 }
 
-async function stopCommand() {
-  await stopServer(config, log)
+async function startCommand(action = 'start', msg = 'Starting server...') {
+  log.info(msg)
+  const result = runSupervisor(action)
+  if (result.status === 0) {
+    await healthCommand(false)
+    console.log(`\n  Dashboard: ${config.baseOrigin}`)
+    process.exit(0)
+  }
+  console.error('Failed to start server')
+  console.error(`  Collector log: ${config.collectorLogFile}`)
+  process.exit(1)
+}
+
+function stopCommand() {
+  const result = runSupervisor('stop')
   log.info('Server stopped')
+  process.exit(result.status ?? 1)
 }
 
 async function spoolEnvelopeCommand() {
@@ -162,27 +173,14 @@ async function spoolEnvelopeCommand() {
   })
 }
 
-function logsServerCommand() {
-  // Pass any extra CLI args (e.g. -f, -n 100) through to docker logs.
-  const extraArgs = cliArgs.commands.slice(1)
-  const args = ['logs', ...extraArgs, config.containerName]
-  const child = spawn('docker', args, { stdio: 'inherit' })
-  child.on('error', (err) => {
-    console.error(`Failed to run docker logs: ${err.message}`)
-    process.exit(1)
-  })
-  child.on('close', (code) => process.exit(code ?? 0))
-}
-
 /**
- * Tail a log file from config.logsDir. Resolves the path itself so the
- * /observe skill doesn't have to probe ~/.claude/plugins/data/... and
- * ~/.agents-observe/... fallbacks.
+ * Tail a log file. The CLI resolves the path itself so the /observe skill
+ * doesn't have to probe ~/.claude/plugins/data/... and ~/.agents-observe/...
+ * fallbacks.
  */
-function logsFileCommand(filename) {
-  const path = resolve(config.logsDir, filename)
-  if (!existsSync(path)) {
-    console.log(`${filename} not found at ${path}`)
+function logsFileCommand(path) {
+  if (!path || !existsSync(path)) {
+    console.log(`Log file not found at ${path}`)
     process.exit(0)
   }
   const lines = cliArgs.tailLines ?? 20
@@ -210,7 +208,7 @@ async function dbResetCommand() {
 
   if (wasRunning) {
     console.log('Stopping server...')
-    await stopServer(config, log)
+    runSupervisor('stop')
   }
 
   const { removed } = removeDatabase(config)
@@ -222,7 +220,7 @@ async function dbResetCommand() {
 
   if (wasRunning) {
     console.log('Restarting server...')
-    await startServer(config, log)
+    runSupervisor('start')
     console.log('Server restarted.')
   }
 }
@@ -240,9 +238,6 @@ function confirm(prompt) {
 }
 
 function parseArgs(args) {
-  // `logs-server` passes remaining args through to `docker logs`, so once
-  // it's the active command, everything after is captured verbatim.
-  const passthroughCommands = new Set(['logs-server'])
   const parsed = {
     commands: [],
     baseUrl: null,
@@ -251,9 +246,7 @@ function parseArgs(args) {
     tailLines: null,
   }
   for (let i = 0; i < args.length; i++) {
-    if (parsed.commands.length && passthroughCommands.has(parsed.commands[0])) {
-      parsed.commands.push(args[i])
-    } else if (args[i] === '--base-url' && args[i + 1]) {
+    if (args[i] === '--base-url' && args[i + 1]) {
       parsed.baseUrl = args[i + 1]
       i++
     } else if (args[i] === '--project-slug' && args[i + 1]) {

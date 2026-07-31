@@ -77,19 +77,13 @@ describe('claim', () => {
     expect(lock.dataRoot).toBe(root)
     expect(lock.identity).toMatch(/^pid=\d+ (starttime|started)=/)
     expect(lock.startedAt).toMatch(/^\d+$/)
-    // A host collector records the local runtime and no container; the field is
-    // written either way so `observe_lock_remove` can clean the lock up.
-    expect(lock.runtime).toBe('local')
-    expect(lock.container).toBe('')
     expect(readdirSync(paths.lockDir).sort()).toEqual([
-      'container',
       'data-root',
       'entrypoint',
       'executable',
       'instance-id',
       'pid',
       'pid-identity',
-      'runtime',
       'started-at',
     ])
   })
