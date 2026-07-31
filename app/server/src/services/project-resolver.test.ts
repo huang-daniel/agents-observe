@@ -117,6 +117,33 @@ describe('resolveProject', () => {
     expect(result).toBe(proj.id)
   })
 
+  test('flags.resolveProject — cwd takes precedence over a shared transcript basedir', async () => {
+    const alpha = await resolveProject(store, {
+      sessionId: 'alpha-session',
+      flags: { resolveProject: true },
+      currentProjectId: null,
+      startCwd: '/repos/alpha',
+      transcriptPath: '/Users/joe/.codex/sessions/2026/07/30/rollout-alpha.jsonl',
+    })
+    await seedSession({
+      id: 'alpha-session',
+      projectId: alpha,
+      startCwd: '/repos/alpha',
+      transcriptPath: '/Users/joe/.codex/sessions/2026/07/30/rollout-alpha.jsonl',
+    })
+
+    const beta = await resolveProject(store, {
+      sessionId: 'beta-session',
+      flags: { resolveProject: true },
+      currentProjectId: null,
+      startCwd: '/repos/beta',
+      transcriptPath: '/Users/joe/.codex/sessions/2026/07/30/rollout-beta.jsonl',
+    })
+
+    expect(beta).not.toBe(alpha)
+    expect((await store.getProjectById(beta!)).slug).toBe('beta')
+  })
+
   test('flags.resolveProject — most recent sibling wins', async () => {
     const projOld = await store.findOrCreateProjectBySlug('old')
     const projNew = await store.findOrCreateProjectBySlug('new')
