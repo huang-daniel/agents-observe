@@ -519,8 +519,9 @@ export class SqliteAdapter implements EventStore {
     // path up to (but not including) the trailing '/<file>'.
     //
     // SQLite has no built-in dirname, so we fold it in at the candidate
-    // side: a session row matches if `start_cwd = ?` (when supplied) OR
-    // its transcript_path starts with `<basedir>/`. We pass the basedir
+    // side. When cwd is available it is the reliable session identity, so
+    // only match `start_cwd = ?`. Otherwise, fall back to matching a
+    // transcript path that starts with `<basedir>/`. We pass the basedir
     // with a trailing slash to avoid matching prefixes of unrelated dirs
     // like `/foo/bar` against `/foo/barbaz/...`.
     const basedirPrefix = transcriptBasedir ? `${transcriptBasedir}/` : null
@@ -531,12 +532,12 @@ export class SqliteAdapter implements EventStore {
            AND project_id IS NOT NULL
            AND (
              (? IS NOT NULL AND start_cwd = ?)
-             OR (? IS NOT NULL AND transcript_path LIKE ? || '%')
+             OR (? IS NULL AND ? IS NOT NULL AND transcript_path LIKE ? || '%')
            )
          ORDER BY COALESCE(last_activity, started_at) DESC
          LIMIT 1`,
       )
-      .get(excludeSessionId, startCwd, startCwd, basedirPrefix, basedirPrefix) as
+      .get(excludeSessionId, startCwd, startCwd, startCwd, basedirPrefix, basedirPrefix) as
       { project_id: number } | undefined
     return row ? { projectId: row.project_id } : null
   }
