@@ -113,6 +113,36 @@ describe('POST /api/events — happy path', () => {
 })
 
 describe('POST /api/events — _meta and project resolution', () => {
+  test('persists Codex SubagentStart identity metadata on the agent row', async () => {
+    const res = await postEvent({
+      agentClass: 'codex',
+      sessionId: 'codex-session-1',
+      agentId: 'codex-subagent-1',
+      hookName: 'SubagentStart',
+      timestamp: 1000,
+      payload: {
+        agent_type: 'reviewer',
+        name: 'reviewer',
+        description: 'Review the shared utilities.',
+      },
+      _meta: {
+        agent: {
+          name: 'reviewer',
+          description: 'Review the shared utilities.',
+          type: 'reviewer',
+        },
+      },
+    })
+
+    expect(res.status).toBe(201)
+    expect(await store.getAgentById('codex-subagent-1')).toMatchObject({
+      name: 'reviewer',
+      description: 'Review the shared utilities.',
+      agent_type: 'reviewer',
+      agent_class: 'codex',
+    })
+  })
+
   test('honors explicit _meta.project.slug', async () => {
     await postEvent({
       agentClass: 'claude-code',

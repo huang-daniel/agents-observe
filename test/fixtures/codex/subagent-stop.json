@@ -1,1 +1,1 @@
-{"session_id":"codex-session-1","agent_id":"codex-session-1","hook_event_name":"SubagentStop","turn_id":"turn-01","agent_id":"codex-subagent-1","agent_type":"reviewer","last_assistant_message":"Review complete."}
+{"session_id":"codex-session-1","agent_id":"codex-subagent-1","hook_event_name":"SubagentStop","turn_id":"turn-01","agent_type":"reviewer","last_assistant_message":"Review complete."}
