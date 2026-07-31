@@ -199,6 +199,23 @@ describe('codex.buildHookEvent', () => {
     expect(envelope._meta?.codex).toEqual({ turnId: 'turn-1' })
   })
 
+  it('attaches subagent identity metadata for server persistence', () => {
+    const { envelope } = buildHookEvent(config, makeLog(), {
+      hook_event_name: 'SubagentStart',
+      session_id: 'cdx-sess-1',
+      agent_id: 'cdx-subagent-1',
+      agent_type: 'reviewer',
+      name: 'reviewer',
+      description: 'Review the shared utilities.',
+    })
+
+    expect(envelope._meta?.agent).toEqual({
+      name: 'reviewer',
+      description: 'Review the shared utilities.',
+      type: 'reviewer',
+    })
+  })
+
   it('does NOT mutate the input payload', () => {
     const payload = {
       hook_event_name: 'shell-call',

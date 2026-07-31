@@ -51,6 +51,21 @@ export function buildHookEvent(config, log, payload) {
   if (Object.keys(codex).length > 0) {
     result.envelope._meta = { ...result.envelope._meta, codex }
   }
+
+  if (hookName === 'SubagentStart') {
+    const agent = {}
+    const fields = [
+      ['name', 'name'],
+      ['description', 'description'],
+      ['type', 'agent_type'],
+    ]
+    for (const [normalized, raw] of fields) {
+      if (payload?.[raw] !== undefined) agent[normalized] = payload[raw]
+    }
+    if (Object.keys(agent).length > 0) {
+      result.envelope._meta = { ...result.envelope._meta, agent }
+    }
+  }
   return result
 }
 
