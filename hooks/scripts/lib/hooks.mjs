@@ -50,6 +50,12 @@ function dispatchHookEvent(config, log, hookPayload) {
   return lib.buildHookEvent(config, log, hookPayload)
 }
 
+/** Build the normalized envelope without delivering it. Used only to safely
+ * bridge a rolling upgrade to a collector that supports schema-1 envelopes. */
+export function buildHookEnvelope(config, log, hookPayload) {
+  return dispatchHookEvent(config, log, hookPayload).envelope
+}
+
 // Exported for tests only — redaction is applied internally by
 // dispatchHookEvent in the normal hook flow.
 export const __testing = { stripLargeImageData }

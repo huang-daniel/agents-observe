@@ -21,10 +21,11 @@
 // exactly these fields as JSON, which is where a JSON shape belongs.
 
 import { renameSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { isUint, nowEpoch, pathMtime } from './paths'
+import { isUint, nowEpoch, pathMtime, SUPPORTED_SPOOL_SCHEMAS } from './paths'
 
 /** Bump when the field set changes in a way readers must notice. */
-export const HEARTBEAT_SCHEMA_VERSION = 1
+export const HEARTBEAT_SCHEMA_VERSION = 2
+export const COLLECTOR_SUPPORTED_SPOOL_SCHEMAS = SUPPORTED_SPOOL_SCHEMAS
 
 /**
  * Age reported for a heartbeat that does not exist or cannot be parsed. Larger
@@ -44,6 +45,10 @@ export interface HeartbeatRecord {
   lastCommittedEventId: string | null
   /** Pending + processing durable spool entries. */
   spoolPending: number | null
+  /** Comma-separated spool schema versions this collector can consume. */
+  collectorSupportedSpoolSchemas: readonly number[]
+  /** Immutable identifier of the collector build publishing this heartbeat. */
+  collectorBuildId: string
 }
 
 function encode(record: HeartbeatRecord): string {
@@ -58,6 +63,8 @@ function encode(record: HeartbeatRecord): string {
       `httpHealthy=${record.httpHealthy}`,
       `lastCommittedEventId=${record.lastCommittedEventId ?? ''}`,
       `spoolPending=${record.spoolPending ?? ''}`,
+      `collectorSupportedSpoolSchemas=${record.collectorSupportedSpoolSchemas.join(',')}`,
+      `collectorBuildId=${record.collectorBuildId}`,
     ].join('\n') + '\n'
   )
 }

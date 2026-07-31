@@ -16,12 +16,15 @@ This document is the contract. The shell primitives that implement it live in
 > below. Every agent (Claude Code and Codex alike) reaches it the same way:
 > `hooks/scripts/hook.sh` on every lifecycle event. There is no second start
 > path. `hooks/scripts/hook.sh` now writes
-> every raw event to the durable spool first, then arms the collector via the
-> supervisor when the health predicate is false. The spool consumer normalizes
-> raw hook entries with the same agent-specific builders
-> (`hooks/scripts/lib/agents/`) the old per-hook `observe_cli.mjs` path used,
-> then commits to SQLite directly — no HTTP round trip. That CLI `hook` command
-> still exists as a last-resort fallback for the rare spool-write failure.
+> every event to the durable spool first, then arms the collector via the
+> supervisor when the health predicate is false. It negotiates the spool
+> schema against the live collector's heartbeat (see
+> [Heartbeat file](#heartbeat-file)) rather than always writing the raw
+> representation. The spool consumer normalizes raw hook entries with the same
+> agent-specific builders (`hooks/scripts/lib/agents/`) the old per-hook
+> `observe_cli.mjs` path used, then commits to SQLite directly — no HTTP round
+> trip. That CLI `hook` command still exists as a last-resort fallback for the
+> rare spool-write failure.
 > Known limitation: the `getSessionInfo` request/response that backfills a
 > session's slug (see [README.md](../README.md#architecture)) only fires on
 > that legacy fallback path — the spool consumer's `commit()` has no HTTP
@@ -327,7 +330,7 @@ One `key=value` per line, written to a temp file and renamed so a reader never
 sees a half-written record:
 
 ```
-schemaVersion=1
+schemaVersion=2
 instanceId=6f2d…
 pid=48213
 startedAt=1785076398
@@ -336,6 +339,8 @@ databaseHealthy=true
 httpHealthy=true
 lastCommittedEventId=
 spoolPending=
+collectorSupportedSpoolSchemas=1,2
+collectorBuildId=0.9.12
 ```
 
 It is deliberately **not** JSON: the shell reader that ships with the kernel is
@@ -347,6 +352,11 @@ carry (below) — which is where a JSON shape belongs.
 spool entry (empty until the first commit). `spoolPending` is the current count
 of entries awaiting commit, including an entry in `processing`. Failed entries
 are retained under `spool/failed` and do not contribute to that count.
+`collectorSupportedSpoolSchemas` is the explicit set of spool record versions
+the collector can consume, and `collectorBuildId` identifies the immutable
+collector build that published the capability set. Hooks only write a newer
+representation after the live collector advertises support for it; otherwise
+they retain the schema-1 envelope fallback during a rolling upgrade.
 
 ## Health predicate
 
@@ -397,7 +407,7 @@ running:
 {
   "ok": true,
   "collector": {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "instanceId": "6f2d…",
     "pid": 48213,
     "dataRoot": "/home/you/.agents-observe",
@@ -409,6 +419,8 @@ running:
     "spoolPending": 0,
     "spoolFailed": 0,
     "spoolLastFailure": null,
+    "collectorSupportedSpoolSchemas": [1, 2],
+    "collectorBuildId": "0.9.12",
     "status": "healthy",
     "reason": null,
     "heartbeatAgeSeconds": 0

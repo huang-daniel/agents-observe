@@ -17,7 +17,7 @@ import type { EventStore } from '../storage/types'
 import { DuplicateSpoolEventIdError } from '../storage/types'
 import { resolveProject } from '../services/project-resolver'
 import { endAgentSession, noteAgentActivity } from '../consumer-tracker'
-import { runtimePaths } from './paths'
+import { runtimePaths, SUPPORTED_SPOOL_SCHEMAS } from './paths'
 
 interface RawHookEntry {
   agentClass?: string
@@ -46,6 +46,12 @@ export interface SpoolConsumerOptions {
   /** Failed entries move aside after this many unsuccessful commits. */
   maxAttempts?: number
   pollIntervalMs?: number
+  /**
+   * An unsupported spool schema is retried until this much wall-clock time
+   * has passed since it first failed, independent of maxAttempts/pollIntervalMs,
+   * so a real collector upgrade has a chance to make it consumable again.
+   */
+  unsupportedSchemaGraceMs?: number
   onStats?: (stats: SpoolStats) => void
   broadcastToSession?: (sessionId: string, message: object) => void
   broadcastToAll?: (message: object) => void
@@ -54,10 +60,26 @@ export interface SpoolConsumerOptions {
 
 interface SpoolEntry {
   eventId?: string
+  spoolSchemaVersion?: number
   envelope?: EventEnvelope
   rawHook?: RawHookEntry
   timestamp: number
   attempts?: number
+  failureType?: string
+  failureReason?: string
+  firstFailureAt?: number
+}
+
+/** An entry for a newer/unknown spool protocol. It may become consumable after an upgrade. */
+export class UnsupportedSpoolSchemaError extends Error {
+  readonly failureType = 'unsupported-spool-schema'
+
+  constructor(version: unknown) {
+    super(
+      `spool schema version ${String(version)} is not supported (supported: ${SUPPORTED_SPOOL_SCHEMAS.join(', ')})`,
+    )
+    this.name = 'UnsupportedSpoolSchemaError'
+  }
 }
 
 export interface SpoolConsumer {
@@ -85,6 +107,7 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
   const failed = join(spool, 'failed')
   const maxAttempts = options.maxAttempts ?? 3
   const pollIntervalMs = options.pollIntervalMs ?? 250
+  const unsupportedSchemaGraceMs = options.unsupportedSchemaGraceMs ?? 5 * 60 * 1000
   let lastCommittedEventId: string | null = null
   let spoolLastFailure: SpoolFailure | null = null
   let timer: ReturnType<typeof setInterval> | null = null
@@ -230,6 +253,19 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
   }
 
   async function entryEnvelope(entry: SpoolEntry): Promise<EventEnvelope> {
+    // Entries written before negotiation had no version. They were always
+    // envelope records, so retain that replay path indefinitely.
+    const schemaVersion =
+      entry.spoolSchemaVersion ?? (entry.envelope ? 1 : entry.rawHook ? 2 : undefined)
+    if (!SUPPORTED_SPOOL_SCHEMAS.includes(schemaVersion as 1 | 2)) {
+      throw new UnsupportedSpoolSchemaError(schemaVersion)
+    }
+    if (schemaVersion === 1 && !entry.envelope) {
+      throw new UnsupportedSpoolSchemaError(schemaVersion)
+    }
+    if (schemaVersion === 2 && !entry.rawHook) {
+      throw new UnsupportedSpoolSchemaError(schemaVersion)
+    }
     if (entry.envelope) return entry.envelope
     if (!entry.rawHook?.payload) throw new Error('spool entry has no envelope or raw hook payload')
 
@@ -306,15 +342,42 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
           rmSync(processingPath)
         } catch (error) {
           let entry: SpoolEntry | null = null
+          let rawEntry: string | null = null
           try {
-            entry = JSON.parse(readFileSync(processingPath, 'utf8')) as SpoolEntry
+            rawEntry = readFileSync(processingPath, 'utf8')
+            entry = JSON.parse(rawEntry) as SpoolEntry
           } catch {
             // Invalid data cannot become valid on retry; preserve it for inspection.
           }
           const attempts = (entry?.attempts ?? 0) + 1
-          if (entry && attempts < maxAttempts) {
+          const failureType =
+            error instanceof UnsupportedSpoolSchemaError ? error.failureType : 'spool-commit-error'
+          const failureReason = error instanceof Error ? error.message : String(error)
+          const now = Date.now()
+          const firstFailureAt =
+            failureType === 'unsupported-spool-schema' ? (entry?.firstFailureAt ?? now) : undefined
+          if (entry) {
             entry.attempts = attempts
+            entry.failureType = failureType
+            entry.failureReason = failureReason
+            if (firstFailureAt !== undefined) entry.firstFailureAt = firstFailureAt
             writeFileSync(processingPath, JSON.stringify(entry) + '\n')
+          } else if (existsSync(processingPath)) {
+            // Even invalid JSON must leave a useful forensic record when it is
+            // dead-lettered; the original bytes remain available in `rawEntry`.
+            writeFileSync(
+              processingPath,
+              JSON.stringify({
+                attempts,
+                failureType: 'invalid-spool-entry',
+                failureReason,
+                rawEntry,
+              }) + '\n',
+            )
+          }
+          const withinSchemaGrace =
+            firstFailureAt !== undefined && now - firstFailureAt < unsupportedSchemaGraceMs
+          if (entry && (attempts < maxAttempts || withinSchemaGrace)) {
             renameSync(processingPath, pendingPath)
           } else if (existsSync(processingPath)) {
             spoolLastFailure = {
@@ -325,7 +388,6 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
             renameSync(processingPath, join(failed, name))
           }
           // A failed entry must not stop later pending work.
-          void error
         }
         report()
       }

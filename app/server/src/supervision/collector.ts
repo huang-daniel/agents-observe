@@ -10,7 +10,12 @@
 
 import { randomUUID } from 'node:crypto'
 import { config } from '../config'
-import { HEARTBEAT_SCHEMA_VERSION, publishHeartbeat, removeHeartbeatIfOwner } from './heartbeat'
+import {
+  COLLECTOR_SUPPORTED_SPOOL_SCHEMAS,
+  HEARTBEAT_SCHEMA_VERSION,
+  publishHeartbeat,
+  removeHeartbeatIfOwner,
+} from './heartbeat'
 import { collectorHealth } from './health'
 import type { CollectorHealthStatus } from './health'
 import {
@@ -92,6 +97,8 @@ export interface CollectorStatus {
   spoolPending: number | null
   spoolFailed: number | null
   spoolLastFailure: { eventId: string; type: string; reason: string } | null
+  collectorSupportedSpoolSchemas: readonly number[]
+  collectorBuildId: string
   status: CollectorHealthStatus
   reason: string | null
   heartbeatAgeSeconds: number | null
@@ -237,6 +244,8 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
       httpHealthy: sampled.httpHealthy,
       lastCommittedEventId: spoolStats.lastCommittedEventId,
       spoolPending: spoolStats.spoolPending,
+      collectorSupportedSpoolSchemas: COLLECTOR_SUPPORTED_SPOOL_SCHEMAS,
+      collectorBuildId: config.version,
     })
     if (ok) {
       updatedAt = at
@@ -313,6 +322,8 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
       spoolPending: spoolStats.spoolPending,
       spoolFailed: spoolStats.spoolFailed,
       spoolLastFailure: spoolStats.spoolLastFailure,
+      collectorSupportedSpoolSchemas: COLLECTOR_SUPPORTED_SPOOL_SCHEMAS,
+      collectorBuildId: config.version,
       status: health.status,
       reason: health.reason,
       heartbeatAgeSeconds: health.heartbeatAgeSeconds,

@@ -12,7 +12,7 @@ import { getJson } from './lib/http.mjs'
 import { createLogger } from './lib/logger.mjs'
 import { startServer, stopServer } from './lib/docker.mjs'
 import { removeDatabase } from './lib/fs.mjs'
-import { hookCommand, hookSyncCommand } from './lib/hooks.mjs'
+import { buildHookEnvelope, hookCommand, hookSyncCommand } from './lib/hooks.mjs'
 
 const cliArgs = parseArgs(process.argv.slice(2))
 const config = getConfig(cliArgs)
@@ -23,6 +23,7 @@ switch (cliArgs.commands[0] || 'help') {
     console.log('Usage: node observe_cli.mjs <command> [--base-url URL] [--project-slug SLUG]')
     console.log('  hook:            Send an event (fire-and-forget)')
     console.log('  hook-sync:       Send an event and return systemMessage JSON')
+    console.log('  spool-envelope:  Normalize a hook event for legacy spool schema')
     console.log('  health:          Check the server health')
     console.log('  start:           Start the server')
     console.log('  stop:            Stop the server')
@@ -36,6 +37,9 @@ switch (cliArgs.commands[0] || 'help') {
     break
   case 'hook-sync':
     hookSyncCommand(config, log)
+    break
+  case 'spool-envelope':
+    spoolEnvelopeCommand()
     break
   case 'health':
     healthCommand()
@@ -139,6 +143,23 @@ async function startCommand(msg = 'Starting server...') {
 async function stopCommand() {
   await stopServer(config, log)
   log.info('Server stopped')
+}
+
+async function spoolEnvelopeCommand() {
+  let input = ''
+  process.stdin.setEncoding('utf8')
+  process.stdin.on('data', (chunk) => {
+    input += chunk
+  })
+  process.stdin.on('end', () => {
+    if (!input.trim()) process.exit(1)
+    try {
+      process.stdout.write(JSON.stringify(buildHookEnvelope(config, log, JSON.parse(input))) + '\n')
+    } catch (err) {
+      log.warn(`Failed to normalize legacy spool envelope: ${err.message}`)
+      process.exitCode = 1
+    }
+  })
 }
 
 function logsServerCommand() {

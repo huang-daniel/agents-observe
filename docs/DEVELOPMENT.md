@@ -9,7 +9,7 @@ Claude Code Hooks  ->  hook.sh  ->  durable spool  ->  API Server (SQLite)  ->  
     (stdin JSON)       (bash)      (collector consumer)  (parse + store)        (WebSocket live)
 ```
 
-- **Hooks** (`hooks/scripts/hook.sh`) read raw JSON from stdin and write it straight to the durable spool, arming the collector via the lock/heartbeat supervisor when it isn't healthy (see [collector-supervision.md](./collector-supervision.md)). Falls back to `observe_cli.mjs` (HTTP POST) only if the spool write itself fails.
+- **Hooks** (`hooks/scripts/hook.sh`) read raw JSON from stdin and write it to the durable spool — negotiating the spool schema with the live collector, arming it via the lock/heartbeat supervisor when it isn't healthy (see [collector-supervision.md](./collector-supervision.md)). Falls back to `observe_cli.mjs` (HTTP POST) only if the spool write itself fails.
 - **CLI** (`hooks/scripts/observe_cli.mjs`) handles `hook-sync`, `health`, `start`, `stop`, `restart`, `logs`, `db-reset`, and the `hook` fallback above. The supervisor arm calls `start` for the container in the docker collector runtime — that is the only Docker start path.
 - **Server** (`app/server/`) Hono + SQLite + WebSocket
 - **Client** (`app/client/`) React 19 + shadcn dashboard

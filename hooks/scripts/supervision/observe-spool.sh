@@ -6,6 +6,12 @@
 [ -n "${OBSERVE_SPOOL_SH_LOADED:-}" ] && return 0
 OBSERVE_SPOOL_SH_LOADED=1
 
+# Schema 1 is the original fully-normalized envelope. Schema 2 lets the
+# collector normalize a raw hook payload. Keep both writers because an already
+# running pre-schema-2 collector can only consume the envelope representation.
+OBSERVE_SPOOL_SCHEMA_ENVELOPE=1
+OBSERVE_SPOOL_SCHEMA_RAW_HOOK=2
+
 SUPERVISION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=hooks/scripts/supervision/lib/observe-env.sh
 . "$SUPERVISION_DIR/lib/observe-env.sh"
@@ -33,7 +39,7 @@ observe_spool_write() { # [event-id]
   target="$OBSERVE_SPOOL/pending/$event_id.json"
   tmp="$OBSERVE_SPOOL/pending/.$event_id.${BASHPID:-$$}.tmp"
   [ ! -e "$target" ] || return 1
-  printf '{"eventId":"%s","timestamp":%s,"envelope":' "$event_id" "$(( $(observe_now_epoch) * 1000 ))" > "$tmp" || {
+  printf '{"eventId":"%s","timestamp":%s,"spoolSchemaVersion":%s,"envelope":' "$event_id" "$(( $(observe_now_epoch) * 1000 ))" "$OBSERVE_SPOOL_SCHEMA_ENVELOPE" > "$tmp" || {
     rm -f "$tmp"
     return 1
   }
@@ -86,8 +92,8 @@ observe_spool_write_hook() { # [event-id]
   project_slug=${project_slug//\\/\\\\}
   project_slug=${project_slug//\"/\\\"}
   project_slug=${project_slug//$'\n'/\\n}
-  printf '{"eventId":"%s","timestamp":%s,"rawHook":{"agentClass":"%s","projectSlug":"%s","notificationOnEvents":%s,"maxImageDataChars":"%s","payload":' \
-    "$event_id" "$(( $(observe_now_epoch) * 1000 ))" "$agent_class" "$project_slug" "$notification_events_json" "$max_image_data" > "$tmp" || return 1
+  printf '{"eventId":"%s","timestamp":%s,"spoolSchemaVersion":%s,"rawHook":{"agentClass":"%s","projectSlug":"%s","notificationOnEvents":%s,"maxImageDataChars":"%s","payload":' \
+    "$event_id" "$(( $(observe_now_epoch) * 1000 ))" "$OBSERVE_SPOOL_SCHEMA_RAW_HOOK" "$agent_class" "$project_slug" "$notification_events_json" "$max_image_data" > "$tmp" || return 1
   cat >> "$tmp" || { rm -f "$tmp"; return 1; }
   printf '}}\n' >> "$tmp" || { rm -f "$tmp"; return 1; }
   ln "$tmp" "$target" 2>/dev/null
