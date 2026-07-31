@@ -50,7 +50,16 @@ start() {
   fi
   [ "$rc" -eq 2 ] && return 2
 
-  if ! observe_lifecycle_acquire_start_lock; then
+  observe_lifecycle_acquire_start_lock
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    # A peer's start succeeded while this one waited. Attaching is the correct
+    # outcome, and the ledger records it as such rather than as a lock failure.
+    observe_lifecycle_log start attached-peer-start
+    report_attached
+    return 0
+  fi
+  if [ "$rc" -ne 0 ]; then
     observe_lifecycle_log start start-lock-timeout
     printf 'collector: start in progress timed out waiting for start lock\n' >&2
     return 1

@@ -325,4 +325,31 @@ describe('starting a containerized collector', () => {
     expect(call).toContain(`instance=${token}`)
     expect(call).toContain(`data-root=${root}`)
   })
+
+  // A detached start request proved nothing: a docker start that failed — or
+  // that produced some other server entirely — was still recorded as a spawn,
+  // and the arm then spent its whole confirmation window waiting for it. The
+  // CLI's verdict is the spawn's verdict.
+  it('reports no spawn when the CLI could not start the requested run', async () => {
+    const nodeLog = join(root, 'node-calls.log')
+
+    const { stdout, code } = await runShell('observe_spawn_collector', {
+      dataRoot: root,
+      lib: '../observe-lifecycle.sh',
+      env: {
+        ...dockerEnv(),
+        AGENTS_OBSERVE_COLLECTOR_RUNTIME: 'docker',
+        FAKE_NODE_LOG: nodeLog,
+        FAKE_NODE_EXIT: '1',
+        PATH: `${FAKE_NODE_DIR}:${FAKE_DOCKER_DIR}:${process.env.PATH}`,
+      },
+    })
+
+    expect(code).not.toBe(0)
+    expect(stdout.trim()).toBe('')
+    expect(readFileSync(nodeLog, 'utf8')).toContain('observe_cli.mjs start')
+    // The failure is durable evidence, not just a return code.
+    const ledger = readFileSync(join(root, 'runtime/collector-lifecycle.log'), 'utf8')
+    expect(ledger).toContain('outcome=docker-start-failed')
+  })
 })

@@ -2,7 +2,11 @@
 # A stand-in for `node`, so the docker spawn path can be exercised without
 # actually starting a container. Records the invocation and the supervision env
 # the arm is expected to pass through to the CLI.
+#
+# FAKE_NODE_EXIT stands in for the CLI's own verdict: the spawn path treats a
+# non-zero exit as "docker did not start the run I asked for".
 set -u
 printf 'argv=%s instance=%s data-root=%s\n' \
   "$*" "${AGENTS_OBSERVE_INSTANCE_ID:-}" "${AGENTS_OBSERVE_DATA_ROOT:-}" \
   >> "${FAKE_NODE_LOG:-/dev/null}"
+exit "${FAKE_NODE_EXIT:-0}"

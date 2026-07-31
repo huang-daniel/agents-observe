@@ -124,13 +124,29 @@ else
   CHECK_1_DETAIL="status='$CONTAINER_STATUS' (expected 'Up ...')"
 fi
 
-# Check 2: server health endpoint returns 200 with ok:true
+# Check 2: the server is not merely answering — it is a supervised collector.
+#
+# `ok:true` at the expected version used to be the whole check, and that is
+# exactly how source/image drift slipped through: a published image that
+# predates collector supervision serves this endpoint perfectly while never
+# claiming the lock or publishing a heartbeat, so the hooks can never confirm
+# it. The collector block is the capability evidence; assert it here, where the
+# real installed plugin meets the real image.
+EXPECTED_VERSION="$(tr -d '[:space:]' < /plugin/VERSION 2>/dev/null || true)"
 HEALTH_BODY="$(curl -sf http://127.0.0.1:4981/api/health 2>/tmp/curl-health.err || true)"
-if [ -n "$HEALTH_BODY" ] && echo "$HEALTH_BODY" | jq -e '.ok == true' >/dev/null 2>&1; then
-  CHECK_2_RESULT="PASS"
-  CHECK_2_DETAIL="$(echo "$HEALTH_BODY" | jq -c '{ok, version, runtime}')"
-else
+if [ -z "$HEALTH_BODY" ] || ! echo "$HEALTH_BODY" | jq -e '.ok == true' >/dev/null 2>&1; then
   CHECK_2_DETAIL="body='$HEALTH_BODY' curl-err='$(cat /tmp/curl-health.err 2>/dev/null || true)'"
+elif [ -n "$EXPECTED_VERSION" ] &&
+  ! echo "$HEALTH_BODY" | jq -e --arg v "$EXPECTED_VERSION" '.version == $v' >/dev/null 2>&1; then
+  CHECK_2_DETAIL="version mismatch: served $(echo "$HEALTH_BODY" | jq -r '.version') expected $EXPECTED_VERSION"
+elif ! echo "$HEALTH_BODY" | jq -e '.collector != null' >/dev/null 2>&1; then
+  CHECK_2_DETAIL="incompatible-collector: v$(echo "$HEALTH_BODY" | jq -r '.version') serves /api/health but exposes no collector block — this image predates collector supervision"
+elif ! echo "$HEALTH_BODY" | jq -e '.collector.status == "healthy"' >/dev/null 2>&1; then
+  CHECK_2_DETAIL="collector $(echo "$HEALTH_BODY" | jq -c '{status: .collector.status, reason: .collector.reason}')"
+else
+  CHECK_2_RESULT="PASS"
+  CHECK_2_DETAIL="$(echo "$HEALTH_BODY" |
+    jq -c '{ok, version, runtime, collector: (.collector | {instanceId, dataRoot, status})}')"
 fi
 
 # Check 3: at least one session with at least one event captured

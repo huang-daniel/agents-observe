@@ -258,16 +258,24 @@ source of ownership truth.
   reports the lock's owner and instance id and never spawns anything.
 - `start` is idempotent: a healthy owner is attached to. Otherwise it waits up
   to `AGENTS_OBSERVE_START_TIMEOUT` for `collector-start.lock`; this bounded
-  wait is the explicit concurrent-start policy. Once it owns that lock it checks
-  health again, reclaims only a lock that `observe_collector_lock_is_abandoned`
-  proves abandoned, and starts one collector — forking the Node entrypoint in
-  the `local` runtime, or handing the container start to
-  `observe_cli.mjs start` in the `docker` one, so image pulls, version checks,
-  port fallback and bind mounts keep their single implementation in
-  `hooks/scripts/lib/docker.mjs`. It reports `started` only after the canonical
-  predicate succeeds for the run it launched (including the optional HTTP health
-  leg): the spawned PID, or the instance id it generated and labelled the
-  container with before starting it.
+  wait is the explicit concurrent-start policy. While waiting it also watches
+  the health predicate, and attaches (ledger outcome `attached-peer-start`) the
+  moment a peer's collector becomes healthy — the winner holds the start lock
+  until it has *confirmed*, which for docker can be far longer than a peer's
+  whole wait, and failing a start that already succeeded turns one slow start
+  into a herd of failures. This can never produce a second collector: that path
+  starts nothing. Once it owns the lock it checks health again, reclaims only a
+  lock that `observe_collector_lock_is_abandoned` proves abandoned, and starts
+  one collector — forking the Node entrypoint in the `local` runtime, or handing
+  the container start to `observe_cli.mjs start` in the `docker` one, so image
+  pulls, version checks, port fallback and bind mounts keep their single
+  implementation in `hooks/scripts/lib/docker.mjs`. The docker spawn runs that
+  CLI in the foreground and takes its exit status as the verdict, so `spawned`
+  means docker accepted and started the requested run rather than "a start
+  request was detached"; a failure is recorded as `docker-start-failed`. It
+  reports `started` only after the canonical predicate succeeds for the run it
+  launched (including the optional HTTP health leg): the spawned PID, or the
+  instance id it generated and labelled the container with before starting it.
 - `restart` sends `TERM` through `observe_signal_locked_collector` — `kill` in
   the `local` runtime, `docker stop` in the `docker` one — waits for the
   collector to release both its lock and heartbeat, then follows `start`. With
@@ -340,7 +348,7 @@ httpHealthy=true
 lastCommittedEventId=
 spoolPending=
 collectorSupportedSpoolSchemas=1,2
-collectorBuildId=0.9.12
+collectorBuildId=0.9.13
 ```
 
 It is deliberately **not** JSON: the shell reader that ships with the kernel is
@@ -420,7 +428,7 @@ running:
     "spoolFailed": 0,
     "spoolLastFailure": null,
     "collectorSupportedSpoolSchemas": [1, 2],
-    "collectorBuildId": "0.9.12",
+    "collectorBuildId": "0.9.13",
     "status": "healthy",
     "reason": null,
     "heartbeatAgeSeconds": 0
@@ -438,6 +446,23 @@ since `observe-health.sh` has no need for them. The block deliberately does
 decides the server is up, and turning it into
 a 503 over a momentarily stale heartbeat would make a supervisor restart a server
 that is serving traffic perfectly well.
+
+The block is also the **capability evidence** the docker start path requires.
+`evaluateHealthResponse` in `hooks/scripts/lib/docker.mjs` is the single
+acceptance rule behind all three of that file's health checks (the `startServer`
+fast path, the running-container recheck, and `waitForHealth`). Whenever a
+specific run was requested — `AGENTS_OBSERVE_INSTANCE_ID`, which only the
+supervisor sets — accepting the server additionally requires `collector` to be
+present, to name that instance and this data root, and to be `healthy`.
+
+`ok:true` at the expected version is *not* evidence of a collector: an image
+published before supervision serves `/api/health` exactly as well while never
+claiming the lock or publishing a heartbeat, so the shell supervisor can never
+confirm it while this side reports "already running" — one version string, two
+protocols. That case is rejected as `incompatible-collector`, and unlike the
+other rejections it is never retried or restarted: the same image would produce
+the same server again. It means the published image and this source tree
+disagree, and the fix is a new image built from this source.
 
 ## Diagnostic output
 

@@ -65,6 +65,7 @@ Key points:
 - TypeScript throughout, kebab-case file names
 - Collector supervision (locks, heartbeat, process identity) has its own contract and invariants — read [docs/collector-supervision.md](docs/collector-supervision.md) before touching `hooks/scripts/supervision/` or `app/server/src/supervision/`. Those two are mirrored implementations of one on-disk contract; tests assert they agree, so change them together
 - `hooks/scripts/hook.sh` is the **only** way any agent starts or reaches the collector — every event spools, then arms the supervisor if it isn't healthy. Don't add a second start path; the supervisor already covers both collector runtimes (host process and Docker container)
+- `VERSION` picks the Docker image tag (`config.mjs`), so a Docker-runtime install runs the **published** image for the current version, not your source. Anything that changes what the container must do (supervision protocol, entrypoint, health shape) needs a version bump *and* a released image, or plugin source and image silently disagree at the same version — see the `incompatible-collector` rule in [docs/collector-supervision.md](docs/collector-supervision.md)
 
 ## Commit Convention
 

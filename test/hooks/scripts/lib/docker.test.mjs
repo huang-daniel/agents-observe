@@ -5,6 +5,7 @@ import {
   buildTranscriptMounts,
   buildDataMount,
   buildSupervisionMounts,
+  evaluateHealthResponse,
 } from '../../../../hooks/scripts/lib/docker.mjs'
 
 describe('buildPortMapping (issue #22)', () => {
@@ -162,5 +163,130 @@ describe('buildSupervisionMounts', () => {
     // a Windows host path cannot be a Linux container path either.
     expect(buildSupervisionMounts('relative/path')).toEqual([])
     expect(buildSupervisionMounts('C:\\Users\\you\\.agents-observe')).toEqual([])
+  })
+})
+
+// The acceptance rule that decides "this server is already the collector I
+// asked for". Its whole reason to exist is that a healthy API at the right
+// version is not evidence of that — see the block comment on the function.
+describe('evaluateHealthResponse', () => {
+  const DATA_ROOT = '/home/you/.agents-observe'
+  const INSTANCE = 'instance-a'
+
+  const supervisor = {
+    API_ID: 'agents-observe',
+    expectedVersion: '0.9.13',
+    instanceId: INSTANCE,
+    supervisionDataRoot: DATA_ROOT,
+  }
+  // No instance requested: a plain `observe start`, not a supervised arm.
+  const plain = { ...supervisor, instanceId: '' }
+
+  const ok = (body) => ({ status: 200, body })
+  const collector = (over = {}) => ({
+    instanceId: INSTANCE,
+    dataRoot: DATA_ROOT,
+    status: 'healthy',
+    reason: null,
+    ...over,
+  })
+  const current = (over = {}) => ({
+    ok: true,
+    id: 'agents-observe',
+    version: '0.9.13',
+    collector: collector(),
+    ...over,
+  })
+
+  it('accepts a supervision-capable server running the requested instance', () => {
+    expect(evaluateHealthResponse(supervisor, ok(current()))).toMatchObject({ ok: true })
+  })
+
+  // The regression this whole change exists for: the published image and the
+  // source tree drifted apart while both called themselves the same version.
+  // A same-version server with no collector block must never be reported as
+  // "already running" — the supervisor would then wait out its entire
+  // confirmation window for a collector that can never appear.
+  it('rejects a legacy same-version server as incompatible, not as already running', () => {
+    const legacy = ok({
+      ok: true,
+      id: 'agents-observe',
+      version: '0.9.13',
+      runtime: 'docker',
+      dbPath: '/home/you/.agents-observe/data/observe.db',
+      activeConsumers: 0,
+      activeClients: 2,
+      transcriptStatsEnabled: true,
+    })
+
+    const verdict = evaluateHealthResponse(supervisor, legacy)
+
+    expect(verdict.ok).toBe(false)
+    expect(verdict.reason).toBe('incompatible-collector')
+    expect(verdict.detail).toContain('collector block')
+  })
+
+  it('still accepts that legacy server when no collector run was requested', () => {
+    // `observe start` by hand has no supervision contract to enforce, and
+    // breaking it would make the CLI unusable against any older server.
+    const legacy = ok({ ok: true, id: 'agents-observe', version: '0.9.13' })
+    expect(evaluateHealthResponse(plain, legacy)).toMatchObject({ ok: true })
+  })
+
+  it('rejects a supervised collector that is a different run', () => {
+    const verdict = evaluateHealthResponse(
+      supervisor,
+      ok(current({ collector: collector({ instanceId: 'instance-b' }) })),
+    )
+    expect(verdict).toMatchObject({ ok: false, reason: 'collector-mismatch' })
+    expect(verdict.detail).toContain('instance-b')
+  })
+
+  it('rejects a collector supervising a different data root', () => {
+    // Same run id, other root: its lock and heartbeat land where this caller
+    // will never read them.
+    const verdict = evaluateHealthResponse(
+      supervisor,
+      ok(current({ collector: collector({ dataRoot: '/tmp/other-root' }) })),
+    )
+    expect(verdict).toMatchObject({ ok: false, reason: 'collector-mismatch' })
+  })
+
+  it('rejects a collector that is present but not healthy, and says why', () => {
+    const verdict = evaluateHealthResponse(
+      supervisor,
+      ok(current({ collector: collector({ status: 'unhealthy', reason: 'stale-heartbeat' }) })),
+    )
+    expect(verdict).toMatchObject({ ok: false, reason: 'collector-unhealthy' })
+    expect(verdict.detail).toContain('stale-heartbeat')
+  })
+
+  it('separates a wrong version from a missing collector', () => {
+    // Version is checked first: an older image is an upgrade (recreate the
+    // container), not the unrecoverable same-version drift.
+    const verdict = evaluateHealthResponse(supervisor, ok(current({ version: '0.9.12' })))
+    expect(verdict).toMatchObject({ ok: false, reason: 'version-mismatch' })
+    expect(verdict.detail).toContain('0.9.12')
+  })
+
+  it('separates another service on the port from our own server', () => {
+    expect(
+      evaluateHealthResponse(supervisor, ok({ ok: true, id: 'something-else' })),
+    ).toMatchObject({ ok: false, reason: 'foreign-service' })
+  })
+
+  it('treats a non-200, an unhealthy body, and no response at all as unavailable', () => {
+    expect(evaluateHealthResponse(supervisor, { status: 503, body: { ok: false } })).toMatchObject({
+      ok: false,
+      reason: 'unavailable',
+    })
+    expect(evaluateHealthResponse(supervisor, ok({ ok: false }))).toMatchObject({
+      ok: false,
+      reason: 'unavailable',
+    })
+    expect(evaluateHealthResponse(supervisor, { status: 0, body: null })).toMatchObject({
+      ok: false,
+      reason: 'unavailable',
+    })
   })
 })
