@@ -33,6 +33,10 @@ COPY app/server/src server/src
 COPY app/server/tsconfig.json server/
 COPY app/server/package.json server/
 
+# Raw hook entries are normalized by the long-lived server with this shared
+# agent registry. Keep it at the path resolved by spool-consumer.ts.
+COPY hooks/scripts/lib/agents /hooks/scripts/lib/agents
+
 # Copy VERSION file for /api/health endpoint
 COPY VERSION /app/VERSION
 

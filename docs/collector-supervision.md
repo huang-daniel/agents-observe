@@ -340,8 +340,9 @@ spoolPending=
 
 It is deliberately **not** JSON: the shell reader that ships with the kernel is
 line-oriented, and a JSON file would be unreadable to `observe-health.sh`. The
-field set is the one the supervision plan specifies, and `/api/health` renders
-exactly these fields as JSON — which is where a JSON shape belongs.
+field set is the one the supervision plan specifies; `/api/health` renders
+these fields as JSON plus two spool-failure fields the heartbeat does not
+carry (below) — which is where a JSON shape belongs.
 `lastCommittedEventId` is the stable id of the most recently SQLite-committed
 spool entry (empty until the first commit). `spoolPending` is the current count
 of entries awaiting commit, including an entry in `processing`. Failed entries
@@ -406,6 +407,8 @@ running:
     "httpHealthy": true,
     "lastCommittedEventId": null,
     "spoolPending": 0,
+    "spoolFailed": 0,
+    "spoolLastFailure": null,
     "status": "healthy",
     "reason": null,
     "heartbeatAgeSeconds": 0
@@ -413,9 +416,14 @@ running:
 }
 ```
 
-`status` and `reason` are the predicate; the rest is the heartbeat this instance
-last published. The block deliberately does **not** drive `ok` or the HTTP status
-code — that endpoint is how the CLI decides the server is up, and turning it into
+`status` and `reason` are the predicate; most of the rest is the heartbeat this
+instance last published. `spoolFailed` (the count of entries under
+`spool/failed`) and `spoolLastFailure` (`{ eventId, type, reason }` for the most
+recent one, or `null`) are the exception: they are sampled from this instance's
+in-process spool consumer directly and are not written to the heartbeat file,
+since `observe-health.sh` has no need for them. The block deliberately does
+**not** drive `ok` or the HTTP status code — that endpoint is how the CLI
+decides the server is up, and turning it into
 a 503 over a momentarily stale heartbeat would make a supervisor restart a server
 that is serving traffic perfectly well.
 

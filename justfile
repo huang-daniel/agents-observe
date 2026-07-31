@@ -61,6 +61,10 @@ dev:
 test:
     npm test
 
+# Build the production image and run its shipped hook entrypoint for Claude and Codex.
+test-docker-hooks:
+    test/docker-hooks-smoke.sh
+
 # Send a test event to the server
 test-event:
     @echo '{"session_id":"test-1234","hook_event_name":"SessionStart","cwd":"/tmp","source":"new"}' \
