@@ -60,11 +60,22 @@ observe_new_instance_id() {
 # Wait for the start lock rather than racing a peer. The bounded wait is an
 # explicit policy: on timeout, the caller fails rather than creating a second
 # collector. A dead start-lock holder is reclaimed by the primitive itself.
+#
+# A waiter also watches for the outcome it actually wants. The winner keeps the
+# start lock until it has *confirmed* its collector, which for docker can be
+# minutes after the collector became healthy; peers wait a small fraction of
+# that. Polling only the lock made every one of them fail a start that had in
+# fact already succeeded — a herd of failures around one success. Watching
+# health costs nothing extra (the peer is already polling) and cannot create a
+# second collector: it only ever returns without starting anything.
+#
+# Returns: 0 acquired the lock, 2 a peer's collector became healthy, 1 timed out.
 observe_lifecycle_acquire_start_lock() {
   local deadline
   deadline=$(observe_lifecycle_deadline)
   while :; do
     observe_start_lock_try_acquire && return 0
+    observe_collector_healthy && return 2
     [ "$(observe_now_epoch)" -ge "$deadline" ] && return 1
     sleep "$OBSERVE_START_POLL"
   done
@@ -94,8 +105,16 @@ observe_spawn_collector() { # prints the spawned owner token
 # The instance id is generated *before* the container starts and passed in, so
 # the container carries it as a label from birth: that label is what lets the
 # host tell this collector run from an earlier one with the same name.
+#
+# The CLI runs in the *foreground* and its exit status decides the outcome. A
+# detached start proves only that a request was launched, so a failed docker
+# start — or a container that came up as something other than this instance —
+# used to be recorded as a spawn and then spent the whole confirmation window
+# waiting for it. Nothing user-facing waits on this: hook.sh already backgrounds
+# the arm, and the CLI's own health wait is bounded well inside the docker start
+# timeout this caller allows.
 observe_spawn_collector_docker() { # prints the instance id
-  local cli token
+  local cli token output
   cli="$OBSERVE_ROOT/hooks/scripts/observe_cli.mjs"
   [ -f "$cli" ] || return 1
   command -v node > /dev/null 2>&1 || return 1
@@ -103,12 +122,16 @@ observe_spawn_collector_docker() { # prints the instance id
 
   token=$(observe_new_instance_id)
   [ -n "$token" ] || return 1
-  (
-    AGENTS_OBSERVE_INSTANCE_ID=$token \
-      AGENTS_OBSERVE_DATA_ROOT=$OBSERVE_DATA_ROOT \
-      nohup node "$cli" start < /dev/null > /dev/null 2>&1 &
-  )
-  printf '%s\n' "$token"
+
+  if output=$(AGENTS_OBSERVE_INSTANCE_ID=$token \
+    AGENTS_OBSERVE_DATA_ROOT=$OBSERVE_DATA_ROOT \
+    node "$cli" start < /dev/null 2>&1); then
+    printf '%s\n' "$token"
+    return 0
+  fi
+  observe_lifecycle_log start docker-start-failed \
+    "instance=$token detail=$(printf '%s' "$output" | tail -n 3)"
+  return 1
 }
 
 observe_spawn_collector_local() { # prints spawned PID

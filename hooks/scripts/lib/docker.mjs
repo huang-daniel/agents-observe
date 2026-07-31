@@ -93,6 +93,99 @@ async function getContainerState(config) {
   return { exists: true, running, versionMatch, labelVersion: label, instanceId }
 }
 
+// -- Health acceptance --------------------------------------------
+
+/**
+ * Decide whether an `/api/health` response is the collector this caller asked
+ * for. Pure, so the acceptance rule has exactly one definition and one test.
+ *
+ * The rule that matters: a healthy API at the expected version is NOT proof of
+ * a supervised collector. A published image can serve `/api/health` at the
+ * right version and still predate supervision entirely — it then never claims
+ * the lock and never publishes a heartbeat, so the shell supervisor can never
+ * confirm it, while this side happily reports "already running". That is the
+ * source/image drift that took the collector down: same version string, two
+ * different protocols.
+ *
+ * So whenever a specific collector run was requested (`config.instanceId` —
+ * only the supervisor sets it), success additionally requires the response to
+ * *be* that run: a `collector` block, this instance, this data root, healthy.
+ *
+ * Returns `{ ok, reason, detail }`. The reasons are deliberately distinct
+ * because callers act differently on them:
+ *   - `unavailable`           nothing healthy answered; go start something
+ *   - `foreign-service`       the port belongs to someone else; move ports
+ *   - `version-mismatch`      our server, wrong build; recreate the container
+ *   - `collector-mismatch`    supervised, but a different run or data root;
+ *                             recreate the container
+ *   - `collector-unhealthy`   supervised, this run, but not healthy; recreate
+ *   - `incompatible-collector` supervision is missing from the running build.
+ *                             Recreating cannot fix this: the same image would
+ *                             produce the same server again.
+ */
+export function evaluateHealthResponse(config, result) {
+  const accept = { ok: true, reason: null, detail: '' }
+  const reject = (reason, detail) => ({ ok: false, reason, detail })
+
+  if (result?.status !== 200 || !result.body?.ok) {
+    return reject('unavailable', `no healthy response (HTTP ${result?.status ?? 'none'})`)
+  }
+
+  const body = result.body
+  if (body.id !== config.API_ID) {
+    return reject('foreign-service', `port answered by "${body.id ?? 'an unknown service'}"`)
+  }
+  if (config.expectedVersion && body.version !== config.expectedVersion) {
+    return reject(
+      'version-mismatch',
+      `running ${body.version ?? 'unknown'}, expected ${config.expectedVersion}`,
+    )
+  }
+
+  // No requested instance means no supervision contract to check: this is a
+  // plain `observe start`, and a healthy same-version API is the whole answer.
+  if (!config.instanceId) return accept
+
+  const collector = body.collector
+  if (!collector || typeof collector !== 'object') {
+    return reject(
+      'incompatible-collector',
+      `server v${body.version ?? 'unknown'} exposes no collector block — it predates collector supervision`,
+    )
+  }
+  if (collector.instanceId !== config.instanceId) {
+    return reject(
+      'collector-mismatch',
+      `collector instance ${collector.instanceId || '(none)'} is not the requested ${config.instanceId}`,
+    )
+  }
+  if (collector.dataRoot !== config.supervisionDataRoot) {
+    return reject(
+      'collector-mismatch',
+      `collector data root ${collector.dataRoot || '(none)'} is not ${config.supervisionDataRoot || '(none)'}`,
+    )
+  }
+  if (collector.status !== 'healthy') {
+    return reject(
+      'collector-unhealthy',
+      `collector status ${collector.status || 'unknown'}${collector.reason ? ` (${collector.reason})` : ''}`,
+    )
+  }
+  return accept
+}
+
+/**
+ * Report the one failure a restart cannot repair, with the action that can.
+ */
+function logIncompatibleCollector(config, verdict, log) {
+  log.error(`ERROR: incompatible-collector — ${verdict.detail}`)
+  log.error(`  Image: ${config.dockerImage}`)
+  log.error('  This server answers /api/health but does not take part in collector')
+  log.error('  supervision, so the hooks can never confirm it. The published image and this')
+  log.error('  source tree disagree at the same version — publish an image built from this')
+  log.error('  source, or point AGENTS_OBSERVE_DOCKER_IMAGE at one that has supervision.')
+}
+
 // -- Docker lifecycle ---------------------------------------------
 
 /**
@@ -183,22 +276,34 @@ export async function startServer(config, log = console) {
   }
 
   // Check if something is already running on the target port
-  const healthResult = await getJson(`${config.apiBaseUrl}/health`)
-  if (healthResult.status === 200 && healthResult.body?.ok) {
-    if (healthResult.body.id !== config.API_ID) {
+  const verdict = evaluateHealthResponse(config, await getJson(`${config.apiBaseUrl}/health`))
+  if (verdict.ok) {
+    const port = new URL(config.apiBaseUrl).port || '4981'
+    log.info(`Server already running on port ${port}`)
+    return port
+  }
+  switch (verdict.reason) {
+    case 'incompatible-collector':
+      // Never "already running": a supervisor that believed this would wait out
+      // its whole confirmation window for a collector that cannot appear.
+      logIncompatibleCollector(config, verdict, log)
+      return null
+    case 'foreign-service':
       log.warn(
         `Port ${config.serverPort} is in use by another service, auto-assigning a free port...`,
       )
-    } else if (config.expectedVersion && healthResult.body.version !== config.expectedVersion) {
-      log.warn(
-        `Server version mismatch: running ${healthResult.body.version}, expected ${config.expectedVersion}. Restarting...`,
-      )
+      break
+    case 'version-mismatch':
+      log.warn(`Server version mismatch: ${verdict.detail}. Restarting...`)
       await safeRemoveContainer(config, log)
-    } else {
-      const port = new URL(config.apiBaseUrl).port || '4981'
-      log.info(`Server already running on port ${port}`)
-      return port
-    }
+      break
+    case 'collector-mismatch':
+    case 'collector-unhealthy':
+      log.warn(`Running server is not the requested collector: ${verdict.detail}. Restarting...`)
+      await safeRemoveContainer(config, log)
+      break
+    default:
+      break // nothing healthy answered — fall through to the start paths
   }
 
   // Ensure the local data dir has been created
@@ -213,14 +318,18 @@ export async function startServer(config, log = console) {
   if (state) {
     if (state.running) {
       // Container is running — re-check health in case it came up between our first check and now
-      const recheck = await getJson(`${config.apiBaseUrl}/health`)
-      if (recheck.status === 200 && recheck.body?.ok) {
+      const recheck = evaluateHealthResponse(config, await getJson(`${config.apiBaseUrl}/health`))
+      if (recheck.ok) {
         const port = new URL(config.apiBaseUrl).port || '4981'
         log.info(`Server started by another process on port ${port}`)
         return port
       }
-      // Running but not healthy — remove and do a fresh start
-      log.warn('Container is running but unhealthy, restarting...')
+      if (recheck.reason === 'incompatible-collector') {
+        logIncompatibleCollector(config, recheck, log)
+        return null
+      }
+      // Running but not the collector we can accept — remove and do a fresh start
+      log.warn(`Container is running but ${recheck.detail}, restarting...`)
       await safeRemoveContainer(config, log)
     } else if (config.instanceId && state.instanceId !== config.instanceId) {
       // A supervisor asked for a specific collector run; this container is a
@@ -345,16 +454,25 @@ export async function startServer(config, log = console) {
 async function waitForHealth(config, port, log) {
   const apiUrl = `http://127.0.0.1:${port}/api`
   log.info('Waiting for server to start...')
+  let verdict = { ok: false, reason: 'unavailable', detail: 'no response yet' }
   for (let i = 0; i < 15; i++) {
-    const h = await getJson(`${apiUrl}/health`)
-    if (h.status === 200 && h.body?.ok) {
+    verdict = evaluateHealthResponse(config, await getJson(`${apiUrl}/health`))
+    if (verdict.ok) {
       log.info('Server started successfully')
       return port
     }
+    // A server that answers but can never become the collector we asked for
+    // will not change its mind. Spending the rest of the window on it only
+    // delays the real diagnosis.
+    if (verdict.reason === 'incompatible-collector' || verdict.reason === 'foreign-service') break
     await new Promise((r) => setTimeout(r, 1000))
   }
 
-  log.error('Server failed to start within 15 seconds')
+  if (verdict.reason === 'incompatible-collector') {
+    logIncompatibleCollector(config, verdict, log)
+    return null
+  }
+  log.error(`Server failed to start within 15 seconds: ${verdict.detail}`)
   log.error(`Check: docker logs ${config.containerName}`)
   return null
 }

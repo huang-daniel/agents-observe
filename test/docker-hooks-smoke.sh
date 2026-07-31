@@ -42,6 +42,34 @@ for _ in $(seq 1 30); do
 done
 curl -fsS "http://127.0.0.1:$PORT/api/health" | grep -q '"ok":true'
 
+# The image has to be a *supervised collector*, not merely a server that
+# answers. An image built before collector supervision serves this endpoint
+# exactly as well while never claiming the lock or publishing a heartbeat, so
+# the hooks can never confirm it — the source/image drift that took the
+# collector down. Assert the capability, the requested run, and the shared data
+# root, so a Dockerfile or build that drops supervision fails here instead of
+# after publication.
+node -e '
+  const health = JSON.parse(process.argv[1]);
+  const [instance, dataRoot] = process.argv.slice(2);
+  const collector = health.collector;
+  if (!collector) {
+    console.error(`incompatible-collector: v${health.version} exposes no collector block`);
+    process.exit(1);
+  }
+  const mismatches = [
+    ["instanceId", collector.instanceId, instance],
+    ["dataRoot", collector.dataRoot, dataRoot],
+    ["status", collector.status, "healthy"],
+  ].filter(([, actual, expected]) => actual !== expected);
+  if (mismatches.length) {
+    for (const [field, actual, expected] of mismatches) {
+      console.error(`collector.${field}: got ${actual}, expected ${expected}`);
+    }
+    process.exit(1);
+  }
+' "$(curl -fsS "http://127.0.0.1:$PORT/api/health")" "$INSTANCE" "$ROOT"
+
 run_hook() {
   local agent_class=$1 session_id=$2
   printf '{"hook_event_name":"SessionStart","session_id":"%s","agent_id":"%s-agent","cwd":"/workspace"}' \

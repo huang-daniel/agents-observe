@@ -2,7 +2,7 @@
 // real collector and exercise the same lock, heartbeat, and HTTP predicate the
 // command uses in production.
 
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
@@ -160,6 +160,76 @@ describe('observe-arm.sh', () => {
     const outputs = `${a.stdout}${b.stdout}`
     expect((outputs.match(/collector: started/g) ?? []).length).toBe(1)
     expect((outputs.match(/collector: attached/g) ?? []).length).toBe(1)
+  }, 30_000)
+
+  it('attaches to a peer that succeeds while it is still waiting for the start lock', async () => {
+    const { root, entry } = fixture()
+    entry.port = await freePort()
+
+    // The winner keeps the start lock until it has *confirmed* its collector,
+    // which for docker can be far longer than a peer's whole wait. Waiters used
+    // to poll only the lock, so every one of them failed a start that had
+    // already succeeded. Here the lock is held for the entire test and never
+    // released — the only way out is noticing the collector became healthy.
+    const holder = spawn(
+      'bash',
+      [
+        '-c',
+        [
+          `. '${join(SUPERVISION_DIR, 'lib/observe-heartbeat.sh')}'`,
+          'observe_env_init || exit 2',
+          'observe_runtime_ensure || exit 2',
+          'observe_start_lock_try_acquire || exit 1',
+          // `exit 0` keeps bash from exec-ing into the last command: the lock
+          // records its holder's executable, and an exec would make this
+          // process look like a different one, i.e. an abandoned lock.
+          'sleep 60',
+          'exit 0',
+        ].join('\n'),
+      ],
+      { env: { ...process.env, AGENTS_OBSERVE_DATA_ROOT: root }, stdio: 'ignore' },
+    )
+
+    try {
+      await waitFor(() => existsSync(`${root}/runtime/collector-start.lock`))
+
+      const waiting = command(ARM, ['start'], root, entry.port, {
+        AGENTS_OBSERVE_START_TIMEOUT: '10',
+        AGENTS_OBSERVE_START_POLL: '0.05',
+      })
+
+      // Only now does the peer's collector come up, so the arm above is
+      // already inside the start-lock wait rather than attaching on its first
+      // health check.
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      // Same argv the arm gives a local collector: the lock records the
+      // entrypoint marker, and health re-reads it from the live command line.
+      const collector = spawn(FAKE_COLLECTOR, ['src/index.ts', MARKER], {
+        env: {
+          ...process.env,
+          AGENTS_OBSERVE_DATA_ROOT: root,
+          AGENTS_OBSERVE_SERVER_PORT: String(entry.port),
+          AGENTS_OBSERVE_HEALTH_URL: `http://127.0.0.1:${entry.port}/api/health`,
+        },
+        stdio: 'ignore',
+      })
+
+      try {
+        const result = await waiting
+        expect(result.code, result.stderr).toBe(0)
+        expect(result.stdout).toContain('collector: attached')
+        expect(result.stderr).not.toContain('timed out waiting for start lock')
+        // The ledger has to tell "a peer was still starting" apart from a lock
+        // failure, or the herd stays invisible in diagnosis.
+        expect(readFileSync(`${root}/runtime/collector-lifecycle.log`, 'utf8')).toContain(
+          'outcome=attached-peer-start',
+        )
+      } finally {
+        collector.kill('SIGTERM')
+      }
+    } finally {
+      holder.kill('SIGKILL')
+    }
   }, 30_000)
 
   it('rejects a reused PID as unsafe instead of spawning over it', async () => {
