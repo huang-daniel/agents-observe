@@ -29,7 +29,7 @@ The script builds the server image, saves it to a tarball, builds the test conta
 Four checks run after `claude` exits:
 
 1. **Inner container exists** — `docker ps -a` inside the test container shows a running `agents-observe` container. Hard check.
-2. **Server health** — `curl http://127.0.0.1:4981/api/health` returns 200 with `ok: true`. Hard check.
+2. **Server health** — `curl http://127.0.0.1:4981/api/health` returns 200 with `ok: true` at the expected version, and a `collector` block that names this instance's data root and reports `healthy` — an `ok:true` server that lacks a healthy collector block predates supervision and fails this check (see [docs/collector-supervision.md](../../docs/collector-supervision.md)). Hard check.
 3. **Events captured** — `curl http://127.0.0.1:4981/api/sessions/recent` returns at least one session. Hard check.
 4. **Error count in logs** — greps `ERROR` lines in `cli.log`, and reports the collector supervision status plus the lifecycle ledger. Soft check (reported, does not fail the run).
 
