@@ -16,12 +16,15 @@ This document is the contract. The shell primitives that implement it live in
 > below. Every agent (Claude Code and Codex alike) reaches it the same way:
 > `hooks/scripts/hook.sh` on every lifecycle event. There is no second start
 > path. `hooks/scripts/hook.sh` now writes
-> every raw event to the durable spool first, then arms the collector via the
-> supervisor when the health predicate is false. The spool consumer normalizes
-> raw hook entries with the same agent-specific builders
-> (`hooks/scripts/lib/agents/`) the old per-hook `observe_cli.mjs` path used,
-> then commits to SQLite directly — no HTTP round trip. That CLI `hook` command
-> still exists as a last-resort fallback for the rare spool-write failure.
+> every event to the durable spool first, then arms the collector via the
+> supervisor when the health predicate is false. It negotiates the spool
+> schema against the live collector's heartbeat (see
+> [Heartbeat file](#heartbeat-file)) rather than always writing the raw
+> representation. The spool consumer normalizes raw hook entries with the same
+> agent-specific builders (`hooks/scripts/lib/agents/`) the old per-hook
+> `observe_cli.mjs` path used, then commits to SQLite directly — no HTTP round
+> trip. That CLI `hook` command still exists as a last-resort fallback for the
+> rare spool-write failure.
 > Known limitation: the `getSessionInfo` request/response that backfills a
 > session's slug (see [README.md](../README.md#architecture)) only fires on
 > that legacy fallback path — the spool consumer's `commit()` has no HTTP
