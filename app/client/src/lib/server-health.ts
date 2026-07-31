@@ -5,7 +5,6 @@ export interface ServerHealth {
   id?: string
   version?: string
   logLevel?: string
-  runtime?: string
   dbPath?: string
   activeConsumers?: number
   activeClients?: number

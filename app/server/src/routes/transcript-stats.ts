@@ -2,7 +2,6 @@ import { Hono } from 'hono'
 import { promises as fs } from 'node:fs'
 import type { EventStore } from '../storage/types'
 import { config } from '../config'
-import { resolveTranscriptPath } from '../services/transcript-path'
 import { parseSessionTranscripts } from '../transcript-parser'
 
 type Env = { Variables: { store: EventStore } }
@@ -23,12 +22,10 @@ router.get('/sessions/:sessionId/transcript-stats', async (c) => {
 
   const sessionId = c.req.param('sessionId')
   const store = c.get('store')
-  const hostPath = await store.getSessionTranscriptPath(sessionId)
-  if (!hostPath) {
+  const resolved = await store.getSessionTranscriptPath(sessionId)
+  if (!resolved) {
     return c.json({ error: 'no_transcript', message: 'No transcript path found for session.' }, 404)
   }
-
-  const resolved = resolveTranscriptPath(hostPath, config.transcriptStats.bases)
 
   let stat
   try {

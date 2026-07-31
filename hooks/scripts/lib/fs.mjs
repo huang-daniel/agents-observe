@@ -51,34 +51,6 @@ export function ensureLocalDataDirs(config) {
 }
 
 /**
- * Create the collector's supervision runtime layout under the data root.
- *
- * Called before starting the container, and that timing is the whole point:
- * the container runs as root, so any of these directories it has to create
- * first would come out root-owned inside a tree the hooks write to as the user
- * — and the very next hook would fail to spool its event. Creating them here
- * makes the user the owner, which is what both sides need.
- *
- * The layout itself is defined by hooks/scripts/supervision/lib/observe-env.sh
- * and app/server/src/supervision/paths.ts.
- *
- * @param {object} config - needs supervisionDataRoot
- */
-export function ensureSupervisionDirs(config) {
-  if (!config.supervisionDataRoot) return
-  const root = validatePath(config.supervisionDataRoot, 'supervisionDataRoot')
-  const spool = `${root}/runtime/spool`
-  for (const dir of [
-    `${root}/runtime`,
-    `${spool}/pending`,
-    `${spool}/processing`,
-    `${spool}/failed`,
-  ]) {
-    mkdirSync(dir, { recursive: true })
-  }
-}
-
-/**
  * Resolve the plugin data directory, working around a Claude Code bug where
  * CLAUDE_PLUGIN_DATA can be set to the wrong plugin during skill invocations.
  *

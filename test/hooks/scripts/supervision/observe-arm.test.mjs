@@ -167,7 +167,7 @@ describe('observe-arm.sh', () => {
     entry.port = await freePort()
 
     // The winner keeps the start lock until it has *confirmed* its collector,
-    // which for docker can be far longer than a peer's whole wait. Waiters used
+    // which on a first start can be far longer than a peer's whole wait. Waiters used
     // to poll only the lock, so every one of them failed a start that had
     // already succeeded. Here the lock is held for the entire test and never
     // released — the only way out is noticing the collector became healthy.

@@ -4,7 +4,6 @@
 
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { existsSync } from 'node:fs'
 import { ALL_CALLBACK_HANDLERS } from './callbacks.mjs'
 import {
   resolvePluginDataDir,
@@ -26,8 +25,8 @@ export function getConfig(overrides = {}) {
   /** True when claude is running the scripts via plugin hooks */
   const isPlugin = !!process.env.CLAUDE_PLUGIN_DATA
 
-  /** Runtime used by start scripts: docker | local | dev */
-  const runtime = overrides.runtime || process.env.AGENTS_OBSERVE_RUNTIME || 'docker'
+  /** Runtime used by start scripts: local | dev */
+  const runtime = overrides.runtime || process.env.AGENTS_OBSERVE_RUNTIME || 'local'
   /** True when running in dev mode (hot reload, vite client) */
   const isDevRuntime = runtime === 'dev'
   /** Shutdown delay in ms. 0 or negative disables auto-shutdown. Default 30s. */
@@ -110,9 +109,6 @@ export function getConfig(overrides = {}) {
     (savedPort ? `http://127.0.0.1:${savedPort}/api` : `http://127.0.0.1:${serverPort}/api`)
   const baseOrigin = new URL(apiBaseUrl).origin
   const version = readVersionFile(tmpConfig)
-  const dockerImage =
-    process.env.AGENTS_OBSERVE_DOCKER_IMAGE ||
-    `ghcr.io/simple10/agents-observe:${version ? `v${version}` : 'latest'}`
 
   // Notification trigger list. Three states — preserve the distinction:
   //   undefined  → agent-lib falls back to its default (['Notification'])
@@ -137,30 +133,6 @@ export function getConfig(overrides = {}) {
           .filter((s) => ALL_CALLBACK_HANDLERS.includes(s)),
   )
 
-  // SELinux volume relabeling for docker bind mounts. On SELinux hosts the
-  // bind-mounted data dir keeps its host label (user_home_t), which the
-  // confined container can't write to, so the sqlite DB open fails with
-  // SQLITE_CANTOPEN and the server never starts (GitHub issue #20). The `z`
-  // mount option relabels the dir to the shared container-accessible type.
-  //
-  // Default 'auto': detect via selinuxfs (present on enforcing AND permissive
-  // hosts; absent on non-SELinux systems and Docker Desktop / Mac / Windows /
-  // WSL, so the option is never emitted there). AGENTS_OBSERVE_SELINUX_RELABEL
-  // forces it on/off — e.g. off for users who don't want their ~/.claude and
-  // ~/.codex transcript dirs relabeled.
-  const selinuxRelabelSetting = (
-    overrides.selinuxRelabel ??
-    process.env.AGENTS_OBSERVE_SELINUX_RELABEL ??
-    'auto'
-  )
-    .toString()
-    .trim()
-    .toLowerCase()
-  const selinuxRelabel =
-    selinuxRelabelSetting === '' || selinuxRelabelSetting === 'auto'
-      ? existsSync('/sys/fs/selinux')
-      : ['1', 'true', 'on', 'yes'].includes(selinuxRelabelSetting)
-
   return {
     pluginName,
     isPlugin,
@@ -179,8 +151,7 @@ export function getConfig(overrides = {}) {
      * Host interface the server is published on. Loopback by default so the
      * unauthenticated dashboard/WebSocket is not exposed beyond the local
      * machine (GitHub issue #22). Set AGENTS_OBSERVE_BIND=0.0.0.0 to allow
-     * LAN access. In docker this is the host side of the `-p` mapping; in
-     * local/dev it's passed to the server as the listen host.
+     * LAN access. Passed to the server as the listen host.
      */
     serverBindHost: overrides.bindHost || process.env.AGENTS_OBSERVE_BIND || '127.0.0.1',
     /**
@@ -221,11 +192,6 @@ export function getConfig(overrides = {}) {
     allowedCallbacks,
 
     projectSlug: overrides.projectSlug || process.env.AGENTS_OBSERVE_PROJECT_SLUG || null,
-    containerName:
-      overrides.containerName ||
-      process.env.AGENTS_OBSERVE_DOCKER_CONTAINER_NAME ||
-      'agents-observe',
-    dockerImage,
 
     /* Local dir used to store sqlite database */
     dataDir,
@@ -234,20 +200,18 @@ export function getConfig(overrides = {}) {
     /** Collector supervision namespace — see the resolution note above. */
     supervisionDataRoot,
     /**
-     * Identifies one collector *run*. The supervisor arm generates this before
-     * starting the container and passes it in, so the container can be labelled
-     * with it and recognised from the host afterwards. Empty when nothing
-     * outside the collector needs to predict it.
+     * Where the supervisor redirects the collector's stdout/stderr. Must agree
+     * with `observe_spawn_collector_local` in
+     * hooks/scripts/supervision/observe-lifecycle.sh, which writes it.
+     */
+    collectorLogFile: supervisionDataRoot ? `${supervisionDataRoot}/runtime/collector.log` : '',
+    /**
+     * Identifies one collector *run*. Empty when nothing outside the collector
+     * needs to predict it.
      */
     instanceId: process.env.AGENTS_OBSERVE_INSTANCE_ID || '',
-    /** Label the container carries its instance id under. */
-    dockerInstanceLabel:
-      process.env.AGENTS_OBSERVE_DOCKER_INSTANCE_LABEL || 'simple10-agents-observe.instance',
 
     API_ID: 'agents-observe',
-    dockerLabel: 'simple10-agents-observe.managed',
-    /** True when docker bind mounts should carry the SELinux `z` relabel option (issue #20). */
-    selinuxRelabel,
     expectedVersion: version,
 
     /**
@@ -262,23 +226,8 @@ export function getConfig(overrides = {}) {
       10,
     ),
 
-    /* Test harness only — skip `docker pull` when image is pre-loaded. See docs/plans/_queued/spec-fresh-install-test-harness.md */
-    testSkipPull: overrides.testSkipPull || process.env.AGENTS_OBSERVE_TEST_SKIP_PULL === '1',
-
-    /** When true, the server exposes /api/sessions/:id/transcript-stats and (in docker mode) the container bind-mounts each agent class's session dir read-only. On by default; set to '0' to disable. */
+    /** When true, the server exposes /api/sessions/:id/transcript-stats. On by default; set to '0' to disable. */
     transcriptStatsEnabled: process.env.AGENTS_OBSERVE_TRANSCRIPT_STATS !== '0',
-
-    /**
-     * Host paths to bind-mount when transcript stats are enabled. One
-     * pair per agent class. Defaults assume the standard CLI install
-     * locations (~/.claude/projects, ~/.codex/sessions). Users with
-     * non-standard installs can override either via env vars.
-     */
-    transcriptClaudeHost:
-      process.env.AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_HOST_BASE ||
-      resolve(homeDir, '.claude/projects'),
-    transcriptCodexHost:
-      process.env.AGENTS_OBSERVE_TRANSCRIPT_CODEX_HOST_BASE || resolve(homeDir, '.codex/sessions'),
 
     serverPortFile,
 
@@ -287,61 +236,28 @@ export function getConfig(overrides = {}) {
 }
 
 /**
- * Returns env vars for the server process, matching what docker-compose
- * and docker.mjs pass to the container. Use with spawn/exec env overrides.
+ * Returns env vars for the server process. Use with spawn/exec env overrides.
  */
 export function getServerEnv(config) {
-  const isDocker = config.runtime === 'docker'
-
   return {
-    AGENTS_OBSERVE_SERVER_PORT: isDocker ? '4981' : config.serverPort,
-    AGENTS_OBSERVE_DB_PATH: isDocker
-      ? `/data/${config.databaseFileName}`
-      : resolve(config.dataDir, config.databaseFileName),
-    // Host-side bind mount target for the DB. In docker mode the server
-    // surfaces this in /api/health so the dashboard can show the user
-    // where the DB lives on their machine, not /data/observe.db inside
-    // the container. Unset in local mode (DB_PATH already is the host
-    // path) — server falls back to DB_PATH.
-    AGENTS_OBSERVE_HOST_DB_PATH: isDocker ? resolve(config.dataDir, config.databaseFileName) : '',
+    AGENTS_OBSERVE_SERVER_PORT: config.serverPort,
+    AGENTS_OBSERVE_DB_PATH: resolve(config.dataDir, config.databaseFileName),
     AGENTS_OBSERVE_CLIENT_DIST_PATH: config.isDevRuntime
       ? '' // vite dev server serves the client
-      : isDocker
-        ? '/app/client/dist'
-        : resolve(config.installDir, 'app/client/dist'),
+      : resolve(config.installDir, 'app/client/dist'),
     AGENTS_OBSERVE_LOG_LEVEL: config.logLevel,
-    AGENTS_OBSERVE_RUNTIME: isDocker ? 'docker' : 'local',
-    // Collector supervision. The data root is bind-mounted at the same absolute
-    // path in docker mode, so the lock, heartbeat and spool the collector reads
-    // are the same files the hooks write — and the paths recorded inside them
-    // mean the same thing on both sides of the container boundary.
+    AGENTS_OBSERVE_RUNTIME: config.isDevRuntime ? 'dev' : 'local',
+    // Collector supervision — the lock, heartbeat and spool the collector shares
+    // with the hooks. See docs/collector-supervision.md.
     AGENTS_OBSERVE_DATA_ROOT: config.supervisionDataRoot,
     AGENTS_OBSERVE_INSTANCE_ID: config.instanceId,
-    // A container cannot discover its own name, and that name is half of the
-    // identity the host verifies it by, so it is passed in.
-    AGENTS_OBSERVE_COLLECTOR_CONTAINER: isDocker ? config.containerName : '',
-    // Interface the server binds to. In docker the container must listen on
-    // 0.0.0.0 — the host-side `-p ${bindHost}:...` mapping is what enforces
-    // the loopback boundary. In local/dev the server binds the configured
-    // host directly, defaulting to loopback. See GitHub issue #22.
-    AGENTS_OBSERVE_BIND_HOST: isDocker ? '0.0.0.0' : config.serverBindHost,
+    // Interface the server binds to, defaulting to loopback. See issue #22.
+    AGENTS_OBSERVE_BIND_HOST: config.serverBindHost,
     AGENTS_OBSERVE_RUNTIME_DEV: config.isDevRuntime ? '1' : '',
     AGENTS_OBSERVE_SHUTDOWN_DELAY_MS: String(config.shutdownDelayMs),
     ...(config.isDevRuntime && { AGENTS_OBSERVE_DEV_CLIENT_PORT: config.clientPort }),
     AGENTS_OBSERVE_STORAGE_ADAPTER: 'sqlite',
     AGENTS_OBSERVE_TRANSCRIPT_STATS: config.transcriptStatsEnabled ? '1' : '0',
-    // Per-agent-class bind mounts. Host paths are user-overridable (in
-    // case CLI install lives somewhere non-default); container paths
-    // are fixed because docker.mjs only knows to mount these specific
-    // container-side locations.
-    AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_HOST_BASE:
-      isDocker && config.transcriptStatsEnabled ? config.transcriptClaudeHost : '',
-    AGENTS_OBSERVE_TRANSCRIPT_CLAUDE_CONTAINER_BASE:
-      isDocker && config.transcriptStatsEnabled ? '/host/.claude/projects' : '',
-    AGENTS_OBSERVE_TRANSCRIPT_CODEX_HOST_BASE:
-      isDocker && config.transcriptStatsEnabled ? config.transcriptCodexHost : '',
-    AGENTS_OBSERVE_TRANSCRIPT_CODEX_CONTAINER_BASE:
-      isDocker && config.transcriptStatsEnabled ? '/host/.codex/sessions' : '',
     // Only forward the CORS allowlist when the user set one; otherwise leave
     // it unset so the server applies its loopback-reflect default.
     ...(config.corsOrigins ? { AGENTS_OBSERVE_CORS_ORIGINS: config.corsOrigins } : {}),
@@ -365,7 +281,7 @@ export function getClientEnv(config) {
  * no-op when the user has set explicit path env vars (see
  * `usingDefaultDataDir`) or when a DB already exists at the new path.
  *
- * Called from start.mjs and docker.mjs before the server is launched.
+ * Called from start.mjs before the server is launched.
  */
 export function initLocalDataDirs(config) {
   ensureLocalDataDirs(config)

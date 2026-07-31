@@ -170,86 +170,6 @@ OBSERVE_HEALTH_STATUS='absent'
 OBSERVE_HEALTH_REASON=
 OBSERVE_HEALTH_PID=
 OBSERVE_HEALTH_AGE=
-OBSERVE_HEALTH_RUNTIME=local
-OBSERVE_HEALTH_CONTAINER=
-
-# The docker half of the predicate, entered from observe_collector_healthy once
-# the lock says the collector runs in a container. Called with the lock snapshot
-# already loaded and the data-root leg already passed.
-#
-# The legs the host cannot run are replaced, not skipped. A container's PID
-# means nothing on this host, so liveness comes from the heartbeat instead: the
-# collector republishes it every few seconds from inside the container, which is
-# strictly stronger evidence than `docker inspect` — it proves the collector is
-# *working*, not merely that a container exists. Docker is consulted only when
-# the heartbeat stops being convincing, which is also what keeps it out of the
-# hook hot path: a healthy collector costs zero subprocesses to confirm.
-observe_collector_healthy_docker() { # <grace>
-  local grace=${1:-${OBSERVE_HEALTH_GRACE:-30}}
-
-  if [ -z "$OBSERVE_LOCK_CONTAINER" ] || [ -z "$OBSERVE_LOCK_INSTANCE_ID" ]; then
-    OBSERVE_HEALTH_STATUS='invalid-owner'
-    OBSERVE_HEALTH_REASON='malformed-lock'
-    return 2
-  fi
-
-  if ! OBSERVE_HEALTH_AGE=$(observe_heartbeat_age); then
-    observe_container_health_fallback missing-heartbeat
-    return $?
-  fi
-
-  # A fresh heartbeat from a different instance is worse than no heartbeat: two
-  # collectors are alive in one data root.
-  if ! observe_heartbeat_matches_lock; then
-    OBSERVE_HEALTH_STATUS='invalid-owner'
-    OBSERVE_HEALTH_REASON='instance-mismatch'
-    return 2
-  fi
-
-  if [ "$OBSERVE_HEALTH_AGE" -ge "$grace" ]; then
-    observe_container_health_fallback stale-heartbeat
-    return $?
-  fi
-
-  if ! observe_http_health_check; then
-    OBSERVE_HEALTH_STATUS='unhealthy'
-    OBSERVE_HEALTH_REASON='http-unhealthy'
-    return 1
-  fi
-
-  OBSERVE_HEALTH_STATUS='healthy'
-  return 0
-}
-
-# Decide what an unconvincing heartbeat means for a containerized collector.
-# `<wedged-reason>` is what it means when the container is demonstrably still
-# running — the container is up but the collector inside it is not reporting.
-observe_container_health_fallback() { # <wedged-reason>
-  local wedged=${1:-stale-heartbeat}
-  if observe_container_matches_lock; then
-    OBSERVE_HEALTH_STATUS='unhealthy'
-    OBSERVE_HEALTH_REASON=$wedged
-    return 1
-  fi
-  case "$OBSERVE_CONTAINER_STATE" in
-    stopped)
-      # The container that owned this lock is gone: a plain restartable fault,
-      # exactly like a dead PID.
-      OBSERVE_HEALTH_STATUS='unhealthy'
-      OBSERVE_HEALTH_REASON='dead-container'
-      return 1
-      ;;
-    *)
-      # No docker to ask. Reporting this as unhealthy would invite a supervisor
-      # to start a second collector alongside a container that may be running
-      # perfectly well, so it is an ownership hazard instead.
-      OBSERVE_HEALTH_STATUS='invalid-owner'
-      OBSERVE_HEALTH_REASON='container-unverifiable'
-      return 2
-      ;;
-  esac
-}
-
 observe_collector_healthy() { # [grace]
   local grace=${1:-${OBSERVE_HEALTH_GRACE:-30}} live_identity
   OBSERVE_HEALTH_STATUS='absent'
@@ -257,8 +177,6 @@ observe_collector_healthy() { # [grace]
   OBSERVE_HEALTH_PID=
   OBSERVE_HEALTH_AGE=
   OBSERVE_HEALTH_HTTP=skipped
-  OBSERVE_HEALTH_RUNTIME=local
-  OBSERVE_HEALTH_CONTAINER=
 
   if [ -z "${OBSERVE_LOCK:-}" ] || [ ! -d "$OBSERVE_LOCK" ]; then
     return 1
@@ -266,8 +184,6 @@ observe_collector_healthy() { # [grace]
 
   observe_collector_lock_snapshot > /dev/null || return 1
   OBSERVE_HEALTH_PID=$OBSERVE_LOCK_PID
-  OBSERVE_HEALTH_RUNTIME=$OBSERVE_LOCK_RUNTIME
-  OBSERVE_HEALTH_CONTAINER=$OBSERVE_LOCK_CONTAINER
 
   # A lock recorded against a different data root is an ownership hazard, not a
   # restartable fault: something is supervising across namespaces.
@@ -275,11 +191,6 @@ observe_collector_healthy() { # [grace]
     OBSERVE_HEALTH_STATUS='invalid-owner'
     OBSERVE_HEALTH_REASON='data-root-mismatch'
     return 2
-  fi
-
-  if [ "$OBSERVE_LOCK_RUNTIME" = docker ]; then
-    observe_collector_healthy_docker "$grace"
-    return $?
   fi
 
   if ! observe_is_pid "$OBSERVE_LOCK_PID" || [ -z "$OBSERVE_LOCK_IDENTITY" ]; then

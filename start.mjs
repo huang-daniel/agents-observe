@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 
 /**
- * Starts the API server & dashboard UI locally instead of in docker
+ * Runs the API server & dashboard UI in the foreground.
  *
- * Set AGENTS_OBSERVE_RUNTIME=local|dev in env or claude settings.json to enable auto start to use this script
+ * This is the developer entrypoint (`just dev`, `just start-foreground`). The
+ * supervised path the plugin's hooks use is
+ * hooks/scripts/supervision/observe-arm.sh, which forks the collector detached
+ * and bootstraps a source-only checkout first.
+ *
+ * Set AGENTS_OBSERVE_RUNTIME=local|dev in env or claude settings.json.
  * Reads all config from hooks/scripts/lib/config.mjs (central source of truth).
  *
  * Modes:

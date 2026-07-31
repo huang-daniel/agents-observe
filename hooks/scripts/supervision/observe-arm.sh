@@ -10,14 +10,9 @@ usage() {
   printf 'Usage: observe-arm.sh <attach|start|restart>\n' >&2
 }
 
-# How the owner is named in output and in the ledger. A container's PID belongs
-# to another namespace, so reporting it would name a process that is not there.
+# How the owner is named in output and in the ledger.
 owner_label() {
-  if [ "${OBSERVE_LOCK_RUNTIME:-local}" = docker ]; then
-    printf 'container=%s' "$OBSERVE_LOCK_CONTAINER"
-  else
-    printf 'pid=%s' "$OBSERVE_LOCK_PID"
-  fi
+  printf 'pid=%s' "$OBSERVE_LOCK_PID"
 }
 
 report_attached() {
@@ -41,7 +36,7 @@ attach() {
 }
 
 start() {
-  local spawned rc runtime
+  local spawned rc
   if observe_collector_healthy; then
     report_attached
     return 0
@@ -76,8 +71,6 @@ start() {
   fi
   [ "$rc" -eq 2 ] && return 2
 
-  runtime=$(observe_resolved_runtime)
-
   if [ -d "$OBSERVE_LOCK" ]; then
     if observe_collector_lock_is_abandoned; then
       observe_collector_lock_reclaim || {
@@ -93,19 +86,19 @@ start() {
     fi
   fi
 
-  spawned=$(observe_spawn_collector) || {
-    observe_lifecycle_log start spawn-failed "runtime=$runtime"
+  spawned=$(observe_spawn_collector_local) || {
+    observe_lifecycle_log start spawn-failed
     return 1
   }
-  observe_lifecycle_log start spawned "runtime=$runtime owner=$spawned"
-  if observe_wait_for_spawned_collector "$spawned" "$runtime"; then
+  observe_lifecycle_log start spawned "owner=$spawned"
+  if observe_wait_for_spawned_collector "$spawned"; then
     observe_collector_lock_snapshot >/dev/null
     observe_lifecycle_log start started "$(owner_label) instance=$OBSERVE_LOCK_INSTANCE_ID"
     printf 'collector: started %s instance=%s\n' "$(owner_label)" "$OBSERVE_LOCK_INSTANCE_ID"
     return 0
   fi
 
-  observe_lifecycle_log start confirmation-timeout "runtime=$runtime owner=$spawned"
+  observe_lifecycle_log start confirmation-timeout "owner=$spawned"
   printf 'collector: failed to confirm spawned collector owner=%s healthy\n' "$spawned" >&2
   return 1
 }
@@ -116,7 +109,7 @@ restart() {
       observe_collector_lock_snapshot >/dev/null
       observe_lifecycle_log restart signalling "$(owner_label)"
       observe_signal_locked_collector TERM || return 1
-      if ! observe_wait_for_collector_release "$(observe_shutdown_timeout_for "$OBSERVE_LOCK_RUNTIME")"; then
+      if ! observe_wait_for_collector_release; then
         observe_lifecycle_log restart shutdown-timeout
         printf 'collector: timed out waiting for owner to release lock\n' >&2
         return 1

@@ -1,15 +1,16 @@
 # Fresh install test harness — test container image
-# Runs a nested dockerd so the plugin can start its agents-observe server
-# container in full isolation from the host.
+#
+# A pristine machine: node, bash, and the Claude Code CLI, and nothing else.
+# The plugin source is copied in *without* its dependency trees or built
+# dashboard (see .dockerignore), which is exactly the shape of a Claude plugin
+# marketplace install. The collector has to make itself runnable from that.
 
-FROM docker:27-dind
+FROM node:22-alpine
 
 # Runtime dependencies:
-# - bash: entrypoint script (Alpine default is ash)
+# - bash: entrypoint script and the plugin's hooks (Alpine default is ash)
 # - curl + jq: verification checks against the server API
-# - nodejs + npm: for the Claude Code CLI and the plugin hook scripts
-# - shadow: provides useradd/groupadd for creating non-root user
-RUN apk add --no-cache bash curl jq nodejs npm shadow
+RUN apk add --no-cache bash curl jq
 
 # Install the latest Claude Code CLI globally. The CLAUDE_CODE_CACHE_BUST
 # build arg is passed a fresh value on every test run so this layer is
@@ -20,19 +21,15 @@ ARG CLAUDE_CODE_CACHE_BUST=1
 RUN echo "cache bust token: ${CLAUDE_CODE_CACHE_BUST}" && \
     npm install -g @anthropic-ai/claude-code@latest
 
-# Create a non-root user for running claude (claude CLI refuses
-# --permission-mode bypassPermissions as root).
-# Add to docker group so the user can talk to the inner dockerd.
-RUN groupadd -f docker && \
-    useradd -m -s /bin/bash -G docker testuser
-
 # Copy plugin source into a known location. The .dockerignore at the repo
-# root excludes node_modules, build artifacts, and VCS state.
+# root excludes node_modules, build artifacts, and VCS state — do not relax
+# it, or the harness stops testing a fresh install. `node` is the image's
+# built-in non-root user; the claude CLI refuses bypassPermissions as root.
 COPY . /plugin
-RUN chown -R testuser:testuser /plugin
+RUN chown -R node:node /plugin
 
-# Entrypoint script — orchestrates dockerd, image load, claude run,
-# verification, and diagnostic dump.
+# Entrypoint script — orchestrates the claude run, verification, and the
+# diagnostic dump.
 COPY test/fresh-install/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

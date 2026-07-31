@@ -67,14 +67,8 @@ observe_env_init "$data_root" || exit 2
 observe_collector_healthy
 rc=$?
 
-# A containerized collector is identified by its container, not by a PID that
-# belongs to another namespace and means nothing on this host.
-if [ "$OBSERVE_HEALTH_RUNTIME" = docker ]; then
-  owner="container=$OBSERVE_HEALTH_CONTAINER"
-else
-  owner="pid=$OBSERVE_HEALTH_PID"
-  [ -n "$OBSERVE_HEALTH_PID" ] || owner=
-fi
+owner="pid=$OBSERVE_HEALTH_PID"
+[ -n "$OBSERVE_HEALTH_PID" ] || owner=
 
 case "$OBSERVE_HEALTH_STATUS" in
   healthy)

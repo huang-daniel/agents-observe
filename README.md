@@ -82,11 +82,11 @@ location. See `<root>/data/.migrated-from.json` for the record.
 
 ## Prerequisites
 
-- [Docker](https://www.docker.com/) — a plugin install runs the server as a container
-- [Node.js](https://nodejs.org/) — hook scripts run via `node`
+- [Node.js](https://nodejs.org/) — hook scripts run via `node`, and the server runs on it too
+- npm — the first start installs the server's dependencies and builds the dashboard
 - Bash - hooks are configured to use `hook.sh` for fast fire and forget event logging
 
-If docker, node, or bash are not installed on your host, the plugin will fail to properly load.
+If node, npm, or bash are not installed on your host, the plugin will fail to properly load.
 
 Use the `/observe debug` claude command to help troubleshoot and fix installation issues.
 
@@ -94,12 +94,13 @@ Use the `/observe debug` claude command to help troubleshoot and fix installatio
 
 There is no separate launcher process. Every hook writes its event to a durable
 on-disk spool and then, only when the collector is not healthy, arms the
-supervisor that starts it — one mechanism, shared by Claude Code and Codex. A
-plugin install has no server dependencies to run locally, so the supervisor
-starts the Docker container and supervises it by container identity; a checkout
-with `just install` run supervises a local Node process instead. Either way the
-first events of a session are spooled and delivered once the collector is up, so
-nothing is lost while it starts. See
+supervisor that starts it — one mechanism, shared by Claude Code and Codex. The
+collector is always a Node process on this machine. A plugin install ships
+source only, so the very first start installs the server's dependencies and
+builds the dashboard before forking it; that is a one-time cost, and its output
+lands in `<data root>/runtime/collector-install.log`. Meanwhile the first events
+of a session are spooled and delivered once the collector is up, so nothing is
+lost while it starts. See
 [docs/collector-supervision.md](./docs/collector-supervision.md).
 
 ## Plugin Skills
@@ -113,8 +114,8 @@ nothing is lost while it starts. See
 | `/observe start` | Start the server |
 | `/observe stop` | Stop the server |
 | `/observe restart` | Restart the server |
-| `/observe logs` | Show recent Docker container logs |
-| `/observe debug` | Diagnose server issues (health, docker logs, collector supervision, cli.log) |
+| `/observe logs` | Show recent server logs |
+| `/observe debug` | Diagnose server issues (health, server logs, collector supervision, cli.log) |
 
 ## Why observability matters
 
@@ -160,7 +161,7 @@ cd agents-observe
 # Install just if needed
 brew install just
 
-# Start the docker container
+# Start the supervised collector
 just start
 
 # Or start local dev servers
@@ -202,7 +203,7 @@ just health
 just test-event
 ```
 
-Navigate to **<http://localhost:5174>** (dev) or **<http://localhost:4981>** (Docker). You should see the test event appear. Start a Claude Code session in your configured project and events will stream in automatically.
+Navigate to **<http://localhost:5174>** (dev) or **<http://localhost:4981>** (normal). You should see the test event appear. Start a Claude Code session in your configured project and events will stream in automatically.
 
 ## Standalone Commands
 
@@ -216,19 +217,17 @@ just test         # Run all tests (server + client)
 just test-event   # Send a test event to the server
 just fmt          # Format all source files
 
-# Server (Docker):
-just build        # Build the Docker image locally
-just start        # Start the server (the same path the hooks' supervisor uses)
-just stop         # Stop the server
-just restart      # Restart the server
-just logs         # Follow Docker container logs
-just start-local  # Start server locally without Docker
+# Server:
+just start             # Start the server (the same path the hooks' supervisor uses)
+just stop              # Stop the server
+just restart           # Restart the server
+just logs              # Tail the collector server log
+just start-foreground  # Run the server in the foreground (installs deps, builds the client)
 
 # Utilities:
 just health              # Check server health
-just health              # Check server health
 just db-reset            # Delete the events database
-just cli <command>       # Run CLI directly (hook, health, start, stop, restart, logs)
+just cli <command>       # Run CLI directly (hook, health, start, stop, restart, logs-server)
 just open                # Open the dashboard in browser
 ```
 
@@ -247,10 +246,8 @@ test/                        # Integration tests
 docs/                        # Plans and demo assets
 .claude-plugin/              # Plugin + marketplace manifests
 .env                         # Env config options used by cli & local server
-Dockerfile                   # Production container image
-docker-compose.yml           # Container orchestration - not used by the plugin
 justfile                     # Task runner commands
-start.mjs                    # Local server entrypoint (non-Docker)
+start.mjs                    # Foreground server entrypoint (installs deps, builds client)
 vitest.config.ts             # Test configuration
 package.json                 # Version metadata and workspace scripts
 ```
@@ -267,23 +264,26 @@ package.json                 # Version metadata and workspace scripts
 
 In dev mode, the client and server run as separate processes with separate ports.
 
-In production or docker mode, the client is bundled and served by the server. Both the API and dashboard are served from the same process and port.
+Otherwise the client is bundled and served by the server. Both the API and dashboard are served from the same process and port.
 
-Both local dev and Docker flows default to using the same sqlite database in ./data. The database is auto created as needed.
+Both flows default to using the same sqlite database in ./data. The database is auto created as needed.
 
 ## Troubleshooting
 
-**Docker not running?**
+**First start is slow, or nothing comes up on a fresh plugin install?**
 
-The plugin requires Docker to run the server. Make sure Docker Desktop (or the Docker daemon) is running, then restart Claude Code.
+The first start installs the server's dependencies and builds the dashboard,
+which takes a minute or two. If it never finishes, read
+`<data root>/runtime/collector-install.log` — it holds the full `npm` output —
+and `collector-lifecycle.log` beside it for the supervisor's decisions.
 
 **Port 4981 in use?**
 
-The server auto-assigns a free port if 4981 is taken. To explicitly set a port, add `AGENTS_OBSERVE_SERVER_PORT=<port>` to your environment or `.env` file.
+The server retries the port a few times before giving up. To use a different one, add `AGENTS_OBSERVE_SERVER_PORT=<port>` to your environment or `.env` file.
 
 **Plugin not capturing events?**
 
-Run `/observe debug` to diagnose. It checks server health, collector supervision, Docker container logs, and CLI logs. You can also run `/observe status` for a quick health check.
+Run `/observe debug` to diagnose. It checks server health, collector supervision, the collector server log, and CLI logs. You can also run `/observe status` for a quick health check.
 
 **Events not appearing in the dashboard?**
 

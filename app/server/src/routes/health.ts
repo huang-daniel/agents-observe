@@ -21,11 +21,7 @@ router.get('/health', async (c) => {
       id: config.apiId,
       version: config.version,
       logLevel: config.logLevel,
-      runtime: config.runtime,
-      // Host-side bind mount path in docker mode, real on-disk path in
-      // local mode. Always the path the user can navigate to on their
-      // own filesystem — never the in-container /data/observe.db.
-      dbPath: config.hostDbPath,
+      dbPath: config.dbPath,
       activeConsumers: getConsumerCount(),
       activeClients: getClientCount(),
       transcriptStatsEnabled: config.transcriptStats.enabled,

@@ -10,8 +10,8 @@ claude plugin install agents-observe
 ```
 
 Restart Claude Code. The plugin's hooks capture every event and arm the collector when it isn't
-running — for a plugin install that means starting the Docker container — and the dashboard is at
-**http://localhost:4981**.
+running — on a plugin install the first start also installs the server's dependencies and builds
+the dashboard, a one-time cost — and the dashboard is at **http://localhost:4981**.
 
 ### Skills
 
@@ -24,18 +24,18 @@ running — for a plugin install that means starting the Docker container — an
 | `/observe start` | Start the server |
 | `/observe stop` | Stop the server |
 | `/observe restart` | Restart the server |
-| `/observe logs` | Show recent container logs |
+| `/observe logs` | Show recent server logs |
 | `/observe debug` | Diagnose server issues |
 
 ## Clone & Run
 
-Requires [just](https://github.com/casey/just), [Node.js](https://nodejs.org/), and [Docker](https://www.docker.com/).
+Requires [just](https://github.com/casey/just) and [Node.js](https://nodejs.org/).
 
 ```bash
 git clone https://github.com/simple10/agents-observe.git
 cd agents-observe
 just install   # install dependencies
-just start     # start server via Docker
+just start     # start the supervised collector
 ```
 
 Dashboard: http://localhost:4981
@@ -47,7 +47,6 @@ For dev mode with hot reload: `just dev` (client at http://localhost:5174, API a
 | Problem | Fix |
 |---------|-----|
 | Server not running | Run `/observe start` or restart Claude Code |
-| Docker not running | Start Docker Desktop, then `/observe start` |
 | Port conflict | Set `AGENTS_OBSERVE_SERVER_PORT=<port>` in `.env` |
 | Need diagnostics | Run `/observe debug` |
 | Database issues | Run `just db-reset` |
@@ -64,8 +63,8 @@ Key points:
 - All env vars are centralized in `hooks/scripts/lib/config.mjs` — never read `process.env` elsewhere
 - TypeScript throughout, kebab-case file names
 - Collector supervision (locks, heartbeat, process identity) has its own contract and invariants — read [docs/collector-supervision.md](docs/collector-supervision.md) before touching `hooks/scripts/supervision/` or `app/server/src/supervision/`. Those two are mirrored implementations of one on-disk contract; tests assert they agree, so change them together
-- `hooks/scripts/hook.sh` is the **only** way any agent starts or reaches the collector — every event spools, then arms the supervisor if it isn't healthy. Don't add a second start path; the supervisor already covers both collector runtimes (host process and Docker container)
-- `VERSION` picks the Docker image tag (`config.mjs`), so a Docker-runtime install runs the **published** image for the current version, not your source. Anything that changes what the container must do (supervision protocol, entrypoint, health shape) needs a version bump *and* a released image, or plugin source and image silently disagree at the same version — see the `incompatible-collector` rule in [docs/collector-supervision.md](docs/collector-supervision.md)
+- `hooks/scripts/hook.sh` is the **only** way any agent starts or reaches the collector — every event spools, then arms the supervisor if it isn't healthy. Don't add a second start path; `observe_cli.mjs start/stop/restart` drive the same arm
+- The collector always runs as a host Node process. A plugin install is a source-only clone, so the first start bootstraps it (`observe_bootstrap_collector`): server deps, then the client build. Everything the plugin needs at runtime therefore has to be buildable from this tree with `npm` — see [docs/collector-supervision.md](docs/collector-supervision.md)
 
 ## Commit Convention
 

@@ -86,22 +86,6 @@ export function collectorHealth(paths: RuntimePaths, opts: HealthOptions): Colle
     return fail('invalid-owner', 'data-root-mismatch')
   }
 
-  // A containerized collector's PID belongs to the container's namespace, so
-  // none of the process legs below can speak about it. From *inside* the
-  // container the container-liveness leg is self-evident — this code is running
-  // — but only for our own instance; any other container is something this
-  // process has no way to inspect, and the host predicate (which can ask
-  // docker) is the one that resolves it.
-  if (lock.runtime === 'docker') {
-    if (!lock.container || !lock.instanceId) {
-      return fail('invalid-owner', 'malformed-lock')
-    }
-    if (!opts.expectedInstanceId || lock.instanceId !== opts.expectedInstanceId) {
-      return fail('invalid-owner', 'container-unverifiable')
-    }
-    return heartbeatHealth(paths, opts, lock.instanceId, fail, base)
-  }
-
   if (!isPid(lock.pid) || !lock.identity) {
     return fail('invalid-owner', 'malformed-lock')
   }
@@ -127,8 +111,8 @@ export function collectorHealth(paths: RuntimePaths, opts: HealthOptions): Colle
 }
 
 /**
- * The legs both runtimes share: the collector may be alive, but is it still
- * *working*, and is the thing reporting that the same collector the lock names?
+ * The last legs: the collector may be alive, but is it still *working*, and is
+ * the thing reporting that the same collector the lock names?
  */
 function heartbeatHealth(
   paths: RuntimePaths,

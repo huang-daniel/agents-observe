@@ -17,7 +17,7 @@ coverage/
 .coverage
 htmlcov/
 
-# Docker data directory
+# Local data directories
 /data/
 /logs/
 

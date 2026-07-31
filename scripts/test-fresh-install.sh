@@ -2,37 +2,34 @@
 # scripts/test-fresh-install.sh
 # Fresh install test harness — host-side driver.
 #
-# Builds the agents-observe server image, saves it to a tarball, builds
-# the test container, and runs the test container with the tarball
-# mounted. The test container starts a nested dockerd, loads the tarball,
-# runs the real claude CLI against the plugin, and verifies the fresh
-# install startup path end-to-end.
+# Builds a pristine test container holding a source-only copy of the plugin
+# (no dependency trees, no built dashboard — see .dockerignore), runs the real
+# claude CLI against it, and verifies that the hooks bootstrap a working
+# collector from that state end-to-end.
+#
+# Docker is used here only as the isolation boundary for the test. It is not a
+# runtime the plugin supports — see docs/collector-supervision.md.
 #
 # Required env:
 #   AGENTS_OBSERVE_TEST_CLAUDE_OAUTH_TOKEN — OAuth token for the claude CLI
 #   (can be set in .env at the repo root — this script sources it)
 #
 # Usage:
-#   ./scripts/test-fresh-install.sh [--skip-build] [--skip-ui-check]
+#   ./scripts/test-fresh-install.sh [--skip-ui-check]
 #
 # Flags:
-#   --skip-build     Skip building the server image (reuse agents-observe:local).
-#                    Useful when called from release.sh which already built it.
 #   --skip-ui-check  Skip the manual UI verification step.
 
 set -euo pipefail
 
-SKIP_BUILD=false
 SKIP_UI_CHECK=false
 for arg in "$@"; do
   case "$arg" in
-    --skip-build) SKIP_BUILD=true ;;
     --skip-ui-check) SKIP_UI_CHECK=true ;;
   esac
 done
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TMP_DIR="$REPO_ROOT/.tmp"
 cd "$REPO_ROOT"
 
 # --- Source .env if present --------------------------------------------
@@ -65,39 +62,14 @@ if [ -z "${AGENTS_OBSERVE_TEST_CLAUDE_OAUTH_TOKEN:-}" ]; then
   exit 1
 fi
 
-# --- Tarball path ------------------------------------------------------
-# Docker Desktop on macOS can only bind-mount from certain paths (typically
-# under /Users/). Using a subdir of the repo ensures the mount works.
 CONTAINER_NAME="agents-observe-fresh-install-test"
 UI_PORT=4998
 
-mkdir -p "$TMP_DIR"
-TARBALL="$TMP_DIR/agents-observe-server-image.tar"
-trap 'docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1; rm -f "$TARBALL"' EXIT
-
-# --- Build server image ------------------------------------------------
-if $SKIP_BUILD; then
-  echo ""
-  echo "=== [1/4] Skipping server image build (--skip-build) ==="
-  if ! docker image inspect agents-observe:local >/dev/null 2>&1; then
-    echo "Error: agents-observe:local image not found. Cannot use --skip-build." >&2
-    exit 1
-  fi
-else
-  echo ""
-  echo "=== [1/4] Building server image (agents-observe:local) ==="
-  docker build -t agents-observe:local .
-fi
-
-# --- Save server image to tarball --------------------------------------
-echo ""
-echo "=== [2/4] Saving server image to tarball ==="
-docker save agents-observe:local -o "$TARBALL"
-echo "Tarball: $TARBALL ($(du -h "$TARBALL" | cut -f1))"
+trap 'docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1' EXIT
 
 # --- Build test container image ----------------------------------------
 echo ""
-echo "=== [3/4] Building test container image (agents-observe-test:local) ==="
+echo "=== [1/2] Building test container image (agents-observe-test:local) ==="
 # Pass a fresh cache-bust token so the claude-code npm-install layer is
 # never cached — we want the harness to test against the latest claude
 # (claude auto-updates for real users; a stale cached version gives
@@ -109,7 +81,7 @@ docker build \
 
 # --- Run test container ------------------------------------------------
 echo ""
-echo "=== [4/4] Running test container ==="
+echo "=== [2/2] Running test container ==="
 
 # Determine if we need keep-alive for UI check
 KEEP_ALIVE="0"
@@ -122,10 +94,8 @@ docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
 # Run detached so we can poll logs and keep it alive for UI check
 docker run -d \
-  --privileged \
   --name "$CONTAINER_NAME" \
   -p "${UI_PORT}:4981" \
-  -v "$TARBALL:/server-image.tar:ro" \
   -e "CLAUDE_CODE_OAUTH_TOKEN=$AGENTS_OBSERVE_TEST_CLAUDE_OAUTH_TOKEN" \
   -e "AGENTS_OBSERVE_LOG_LEVEL=trace" \
   -e "AGENTS_OBSERVE_TEST_KEEP_ALIVE=$KEEP_ALIVE" \
@@ -200,9 +170,9 @@ if ! $SKIP_UI_CHECK; then
     echo ""
     echo "Once inside the container, useful things to try:"
     echo "  claude --version"
-    echo "  ls -la /home/testuser/.claude"
-    echo "  find /home/testuser/.claude -type f | head"
-    echo "  su testuser -c 'claude --plugin-dir /plugin -p \"/hooks\"'"
+    echo "  ls -la /home/node/.claude"
+    echo "  find /home/node/.claude -type f | head"
+    echo "  su node -c 'claude --plugin-dir /plugin -p \"/hooks\"'"
     echo ""
     read -r -p "Press Enter to clean up and exit... " _
   fi

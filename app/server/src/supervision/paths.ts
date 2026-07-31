@@ -98,13 +98,13 @@ export function ensureRuntimeDir(paths: RuntimePaths): void {
  * Give supervision state the same owner as the data root it lives in, and only
  * when this process is root and the two disagree.
  *
- * One data root is shared by two identities in the docker runtime: the hooks
- * write the spool as the user, and the collector inside the container writes
- * the lock and heartbeat as root. Files the host cannot remove would strand the
- * data root the first time a container dies without releasing its lock —
- * removing a lock directory needs write access to the directory itself, which
- * root's 0755 does not grant. Failures are ignored: this is a courtesy to the
- * other identity, never a condition of holding the lock.
+ * A collector started as root (under `sudo`, say) writes its lock and heartbeat
+ * as root, while the hooks sharing that data root write the spool as the user.
+ * Files the user cannot remove would strand the data root the first time such a
+ * collector dies without releasing its lock — removing a lock directory needs
+ * write access to the directory itself, which root's 0755 does not grant.
+ * Failures are ignored: this is a courtesy to the other identity, never a
+ * condition of holding the lock.
  */
 export function alignOwnerWithDataRoot(
   path: string,
