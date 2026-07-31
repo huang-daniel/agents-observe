@@ -108,6 +108,22 @@ observe_heartbeat_matches_lock() { # [lock-dir] [heartbeat-path]
   [ "$beat_instance" = "$lock_instance" ]
 }
 
+# Whether the healthy collector explicitly advertises support for a spool
+# schema. Old collectors predate this field and therefore only receive the
+# schema-1 envelope fallback; absence must never be interpreted as support for
+# the newer raw-hook format.
+observe_collector_supports_spool_schema() { # <schema-version> [heartbeat-path]
+  local wanted=${1:-} path=${2:-${OBSERVE_HEARTBEAT:-}} supported version
+  case "$wanted" in ''|*[!0-9]*) return 1 ;; esac
+  supported=$(observe_heartbeat_field collectorSupportedSpoolSchemas "$path" 2>/dev/null || true)
+  [ -n "$supported" ] || return 1
+  local IFS=,
+  for version in $supported; do
+    [ "$version" = "$wanted" ] && return 0
+  done
+  return 1
+}
+
 # HTTP leg of the health predicate.
 #
 # PR1 leaves OBSERVE_HEALTH_URL empty because the collector is not wired to the

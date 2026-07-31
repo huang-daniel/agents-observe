@@ -327,7 +327,7 @@ One `key=value` per line, written to a temp file and renamed so a reader never
 sees a half-written record:
 
 ```
-schemaVersion=1
+schemaVersion=2
 instanceId=6f2d…
 pid=48213
 startedAt=1785076398
@@ -336,6 +336,8 @@ databaseHealthy=true
 httpHealthy=true
 lastCommittedEventId=
 spoolPending=
+collectorSupportedSpoolSchemas=1,2
+collectorBuildId=0.9.12
 ```
 
 It is deliberately **not** JSON: the shell reader that ships with the kernel is
@@ -347,6 +349,11 @@ carry (below) — which is where a JSON shape belongs.
 spool entry (empty until the first commit). `spoolPending` is the current count
 of entries awaiting commit, including an entry in `processing`. Failed entries
 are retained under `spool/failed` and do not contribute to that count.
+`collectorSupportedSpoolSchemas` is the explicit set of spool record versions
+the collector can consume, and `collectorBuildId` identifies the immutable
+collector build that published the capability set. Hooks only write a newer
+representation after the live collector advertises support for it; otherwise
+they retain the schema-1 envelope fallback during a rolling upgrade.
 
 ## Health predicate
 
@@ -397,7 +404,7 @@ running:
 {
   "ok": true,
   "collector": {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "instanceId": "6f2d…",
     "pid": 48213,
     "dataRoot": "/home/you/.agents-observe",
@@ -409,6 +416,8 @@ running:
     "spoolPending": 0,
     "spoolFailed": 0,
     "spoolLastFailure": null,
+    "collectorSupportedSpoolSchemas": [1, 2],
+    "collectorBuildId": "0.9.12",
     "status": "healthy",
     "reason": null,
     "heartbeatAgeSeconds": 0

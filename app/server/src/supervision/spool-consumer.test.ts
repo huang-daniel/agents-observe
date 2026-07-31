@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { SqliteAdapter } from '../storage/sqlite-adapter'
 import type { EventStore } from '../storage/types'
@@ -200,6 +200,35 @@ describe('spool consumer', () => {
       spoolFailed: 1,
       spoolLastFailure: { eventId: 'will-fail', type: 'Error', reason: 'disk full' },
     })
-    expect(existsSync(join(runtimePaths(root).spoolDir, 'failed/will-fail.json'))).toBe(true)
+    const deadLetter = join(runtimePaths(root).spoolDir, 'failed/will-fail.json')
+    expect(existsSync(deadLetter)).toBe(true)
+    expect(JSON.parse(readFileSync(deadLetter, 'utf8'))).toMatchObject({
+      attempts: 2,
+      failureType: 'spool-commit-error',
+      failureReason: 'disk full',
+    })
+  })
+
+  it('records unsupported schema failures distinctly with the final attempt count', async () => {
+    const root = makeDataRoot('spool-unsupported-schema')
+    roots.push(root)
+    const store = new SqliteAdapter(':memory:')
+    const pending = join(runtimePaths(root).spoolDir, 'pending')
+    mkdirSync(pending, { recursive: true })
+    writeFileSync(
+      join(pending, 'future.json'),
+      JSON.stringify({ timestamp: 1, spoolSchemaVersion: 99, envelope: {} }),
+    )
+    const consumer = createSpoolConsumer({ dataRoot: root, store, maxAttempts: 2 })
+    await consumer.consumeOnce()
+    await consumer.consumeOnce()
+
+    expect(
+      JSON.parse(readFileSync(join(runtimePaths(root).spoolDir, 'failed/future.json'), 'utf8')),
+    ).toMatchObject({
+      attempts: 2,
+      failureType: 'unsupported-spool-schema',
+      failureReason: expect.stringContaining('99'),
+    })
   })
 })

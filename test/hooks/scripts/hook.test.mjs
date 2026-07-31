@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -68,6 +68,10 @@ describe('hook.sh spool-first delivery', () => {
       `observe_runtime_ensure && observe_collector_lock_claim healthy-instance ${owner.pid} && observe_heartbeat_publish healthy-instance ${owner.pid}`,
       { dataRoot: root },
     )
+    appendFileSync(
+      join(root, 'runtime/collector.heartbeat'),
+      'collectorSupportedSpoolSchemas=1,2\n',
+    )
 
     await runHook(root, {
       AGENTS_OBSERVE_AGENT_CLASS: 'codex',
@@ -82,6 +86,33 @@ describe('hook.sh spool-first delivery', () => {
       },
     })
     expect(existsSync(join(root, 'runtime/collector-lifecycle.log'))).toBe(false)
+  })
+
+  it('uses a schema-1 envelope with a healthy previous-generation collector', async () => {
+    const root = makeDataRoot('hook-rolling-upgrade')
+    roots.push(root)
+    // This live marked process and pre-negotiation heartbeat model the
+    // collector generation that only understood fully normalized envelopes.
+    const previousCollector = spawnFakeProcess(MARKER)
+    children.push(previousCollector)
+    await runShell(
+      `observe_runtime_ensure && observe_collector_lock_claim previous-generation ${previousCollector.pid} && observe_heartbeat_publish previous-generation ${previousCollector.pid}`,
+      { dataRoot: root },
+    )
+
+    await runHook(root, { AGENTS_OBSERVE_AGENT_CLASS: 'codex' })
+
+    const entry = pendingEntry(root)
+    expect(entry).toMatchObject({
+      spoolSchemaVersion: 1,
+      envelope: {
+        sessionId: 'hook-session',
+        hookName: 'SessionStart',
+        agentClass: 'codex',
+      },
+    })
+    expect(entry.rawHook).toBeUndefined()
+    expect(readdirSync(join(root, 'runtime/spool/failed'))).toEqual([])
   })
 
   it('arms the collector after spooling when its health predicate is false', async () => {

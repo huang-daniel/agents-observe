@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { promisify } from 'node:util'
 
 import {
+  COLLECTOR_SUPPORTED_SPOOL_SCHEMAS,
   HEARTBEAT_SCHEMA_VERSION,
   heartbeatAge,
   heartbeatInstanceId,
@@ -38,6 +39,8 @@ function record(overrides: Partial<Parameters<typeof publishHeartbeat>[1]> = {})
     httpHealthy: true,
     lastCommittedEventId: null,
     spoolPending: null,
+    collectorSupportedSpoolSchemas: COLLECTOR_SUPPORTED_SPOOL_SCHEMAS,
+    collectorBuildId: 'test-build',
     ...overrides,
   }
 }
@@ -68,6 +71,8 @@ describe('publishHeartbeat', () => {
         'pid',
         'schemaVersion',
         'spoolPending',
+        'collectorSupportedSpoolSchemas',
+        'collectorBuildId',
         'startedAt',
         'updatedAt',
       ].sort(),
@@ -77,6 +82,8 @@ describe('publishHeartbeat', () => {
     // Reserved for the spool; empty until it lands.
     expect(fields.lastCommittedEventId).toBe('')
     expect(fields.spoolPending).toBe('')
+    expect(fields.collectorSupportedSpoolSchemas).toBe('1,2')
+    expect(fields.collectorBuildId).toBe('test-build')
   })
 
   it('stays readable by the shell primitive that ships with the kernel', async () => {

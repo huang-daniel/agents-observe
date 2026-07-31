@@ -4,7 +4,11 @@ import type { ChildProcess } from 'node:child_process'
 
 import { collectorHealth, healthExitCode } from './health'
 import type { CollectorHealth } from './health'
-import { HEARTBEAT_SCHEMA_VERSION, publishHeartbeat } from './heartbeat'
+import {
+  COLLECTOR_SUPPORTED_SPOOL_SCHEMAS,
+  HEARTBEAT_SCHEMA_VERSION,
+  publishHeartbeat,
+} from './heartbeat'
 import { tryClaimLock } from './lock'
 import { ensureRuntimeDir, nowEpoch, runtimePaths } from './paths'
 import {
@@ -58,6 +62,8 @@ function beat(instanceId: string, pid: number, updatedAt = nowEpoch()) {
     httpHealthy: true,
     lastCommittedEventId: null,
     spoolPending: null,
+    collectorSupportedSpoolSchemas: COLLECTOR_SUPPORTED_SPOOL_SCHEMAS,
+    collectorBuildId: 'test-build',
   })
 }
 
