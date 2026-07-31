@@ -233,10 +233,15 @@ export class EventStore {
   }
 }
 
+// Compares resolved agent classes over the union of both maps' keys, since
+// processOne() and setAgents() both default a missing/null class to
+// 'claude-code' — a key appearing for the first time with that resolved
+// value is not an effective change and must not force a full reprocess.
 function mapsEqual(left: Map<string, string>, right: Map<string, string>) {
-  if (left.size !== right.size) return false
-  for (const [agentId, agentClass] of left) {
-    if (right.get(agentId) !== agentClass) return false
+  for (const agentId of new Set([...left.keys(), ...right.keys()])) {
+    const leftClass = left.get(agentId) ?? 'claude-code'
+    const rightClass = right.get(agentId) ?? 'claude-code'
+    if (leftClass !== rightClass) return false
   }
   return true
 }
