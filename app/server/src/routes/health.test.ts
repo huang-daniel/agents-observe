@@ -132,4 +132,45 @@ describe('GET /api/health', () => {
     expect(body.ok).toBe(true)
     expect(body.collector).toMatchObject({ status: 'unhealthy', reason: 'stale-heartbeat' })
   })
+
+  test('surfaces durable spool failures in collector health', async () => {
+    vi.doMock('../config', () => ({
+      config: {
+        apiId: 'test-api',
+        version: '0.0.0',
+        logLevel: 'info',
+        runtime: 'node',
+        dbPath: '/tmp/x.db',
+        transcriptStats: { enabled: true },
+      },
+    }))
+    vi.doMock('../consumer-tracker', () => ({ getConsumerCount: () => 0 }))
+    vi.doMock('../websocket', () => ({ getClientCount: () => 0 }))
+    vi.doMock('../supervision/collector', () => ({
+      getCollectorStatus: () => ({
+        spoolPending: 0,
+        spoolFailed: 1,
+        spoolLastFailure: {
+          eventId: 'raw-hook',
+          type: 'Error',
+          reason: 'Cannot find module /hooks/scripts/lib/agents/index.mjs',
+        },
+      }),
+    }))
+
+    const { default: router } = await import('./health')
+    const app = new Hono<Env>()
+    app.use('*', async (c, next) => {
+      c.set('store', stubStore)
+      await next()
+    })
+    app.route('/api', router)
+
+    const body = await (await app.request('/api/health')).json()
+    expect(body.collector).toMatchObject({
+      spoolPending: 0,
+      spoolFailed: 1,
+      spoolLastFailure: expect.objectContaining({ type: 'Error' }),
+    })
+  })
 })

@@ -30,6 +30,14 @@ interface RawHookEntry {
 export interface SpoolStats {
   lastCommittedEventId: string | null
   spoolPending: number
+  spoolFailed: number
+  spoolLastFailure: SpoolFailure | null
+}
+
+export interface SpoolFailure {
+  eventId: string
+  type: string
+  reason: string
 }
 
 export interface SpoolConsumerOptions {
@@ -78,6 +86,7 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
   const maxAttempts = options.maxAttempts ?? 3
   const pollIntervalMs = options.pollIntervalMs ?? 250
   let lastCommittedEventId: string | null = null
+  let spoolLastFailure: SpoolFailure | null = null
   let timer: ReturnType<typeof setInterval> | null = null
   let consuming = false
 
@@ -91,6 +100,8 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
     return {
       lastCommittedEventId,
       spoolPending: eventFiles(pending).length + eventFiles(processing).length,
+      spoolFailed: eventFiles(failed).length,
+      spoolLastFailure,
     }
   }
 
@@ -306,6 +317,11 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
             writeFileSync(processingPath, JSON.stringify(entry) + '\n')
             renameSync(processingPath, pendingPath)
           } else if (existsSync(processingPath)) {
+            spoolLastFailure = {
+              eventId,
+              type: error instanceof Error ? error.name : 'UnknownError',
+              reason: error instanceof Error ? error.message : String(error),
+            }
             renameSync(processingPath, join(failed, name))
           }
           // A failed entry must not stop later pending work.

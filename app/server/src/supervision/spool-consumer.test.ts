@@ -53,7 +53,12 @@ describe('spool consumer', () => {
     await restarted.consumeOnce()
 
     expect(await count(store)).toBe(2)
-    expect(restarted.stats()).toEqual({ lastCommittedEventId: 'still-pending', spoolPending: 0 })
+    expect(restarted.stats()).toEqual({
+      lastCommittedEventId: 'still-pending',
+      spoolPending: 0,
+      spoolFailed: 0,
+      spoolLastFailure: null,
+    })
   })
 
   it('uses the SQLite spool-event unique constraint when replayed twice', async () => {
@@ -191,6 +196,10 @@ describe('spool consumer', () => {
     await consumer.consumeOnce()
 
     expect(consumer.stats().spoolPending).toBe(0)
+    expect(consumer.stats()).toMatchObject({
+      spoolFailed: 1,
+      spoolLastFailure: { eventId: 'will-fail', type: 'Error', reason: 'disk full' },
+    })
     expect(existsSync(join(runtimePaths(root).spoolDir, 'failed/will-fail.json'))).toBe(true)
   })
 })

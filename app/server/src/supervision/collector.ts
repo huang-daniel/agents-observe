@@ -90,6 +90,8 @@ export interface CollectorStatus {
   httpHealthy: boolean
   lastCommittedEventId: string | null
   spoolPending: number | null
+  spoolFailed: number | null
+  spoolLastFailure: { eventId: string; type: string; reason: string } | null
   status: CollectorHealthStatus
   reason: string | null
   heartbeatAgeSeconds: number | null
@@ -107,7 +109,12 @@ export interface CollectorSupervision {
   startHeartbeat(): void
   stopHeartbeat(): void
   /** Update the durable spool values published in heartbeat and /api/health. */
-  setSpoolStats(stats: { lastCommittedEventId: string | null; spoolPending: number }): void
+  setSpoolStats(stats: {
+    lastCommittedEventId: string | null
+    spoolPending: number
+    spoolFailed: number
+    spoolLastFailure: { eventId: string; type: string; reason: string } | null
+  }): void
   /** Release heartbeat + lock, but only if this instance still owns them. */
   release(): boolean
   status(): CollectorStatus
@@ -157,7 +164,12 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
   let released = false
   let updatedAt: number | null = null
   let lastProbe: CollectorProbe = { databaseHealthy: false, httpHealthy: false }
-  let spoolStats = { lastCommittedEventId: null as string | null, spoolPending: 0 }
+  let spoolStats = {
+    lastCommittedEventId: null as string | null,
+    spoolPending: 0,
+    spoolFailed: 0,
+    spoolLastFailure: null as { eventId: string; type: string; reason: string } | null,
+  }
 
   if (options.setProcessTitle && marker) {
     // Gives the live process a stable, greppable identity. It is deliberately
@@ -262,10 +274,7 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
     timer = null
   }
 
-  function setSpoolStats(stats: {
-    lastCommittedEventId: string | null
-    spoolPending: number
-  }): void {
+  function setSpoolStats(stats: typeof spoolStats): void {
     spoolStats = stats
   }
 
@@ -302,6 +311,8 @@ export function createCollectorSupervision(options: SupervisionOptions = {}): Co
       httpHealthy: lastProbe.httpHealthy,
       lastCommittedEventId: spoolStats.lastCommittedEventId,
       spoolPending: spoolStats.spoolPending,
+      spoolFailed: spoolStats.spoolFailed,
+      spoolLastFailure: spoolStats.spoolLastFailure,
       status: health.status,
       reason: health.reason,
       heartbeatAgeSeconds: health.heartbeatAgeSeconds,
