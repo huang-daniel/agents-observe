@@ -22,14 +22,17 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: |
-            package-lock.json
+            app/server/package-lock.json
             app/client/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm install
+          cd app/server && npm install
+          cd ../client && npm install
 
       - name: Run checks
         run: |
           npm test
           npm run fmt
-          cd app/client && npm install && npm run build
+          cd app/client && npm run build
