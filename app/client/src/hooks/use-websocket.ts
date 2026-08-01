@@ -44,7 +44,19 @@ function markSessionActiveInCache(queryClient: QueryClient, sessionId: string): 
   })
 }
 
-const WS_URL = `ws://${window.location.host}/api/events/stream`
+/**
+ * Keep the WebSocket scheme aligned with the page. Browsers block insecure
+ * `ws:` connections from HTTPS dashboards as mixed content, which leaves the
+ * dashboard usable after a refresh but disconnected from live broadcasts.
+ */
+export function getWebSocketUrl(
+  location: Pick<Location, 'protocol' | 'host'> = window.location,
+): string {
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${scheme}://${location.host}/api/events/stream`
+}
+
+const WS_URL = getWebSocketUrl()
 
 // Fetch log level from server once on module load. Shares the page-
 // wide /api/health fetch with the version footer + settings modal.
