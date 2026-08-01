@@ -1,5 +1,12 @@
 import { execFile } from 'node:child_process'
-import { appendFileSync, existsSync, readdirSync, readFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -56,6 +63,16 @@ function pendingEntry(root) {
   const dir = join(root, 'runtime/spool/pending')
   const [name] = readdirSync(dir).filter((file) => file.endsWith('.json'))
   return JSON.parse(readFileSync(join(dir, name), 'utf8'))
+}
+
+// Looks already bootstrapped so arming skips observe_bootstrap_collector's real npm install/build.
+function bootstrappedSourceRoot() {
+  const root = makeDataRoot('hook-source-root')
+  mkdirSync(join(root, 'app/server/node_modules'), { recursive: true })
+  mkdirSync(join(root, 'app/client/dist'), { recursive: true })
+  writeFileSync(join(root, 'app/client/package.json'), '{"name":"stub","private":true}\n')
+  writeFileSync(join(root, 'app/client/dist/index.html'), '<div id="root"></div>\n')
+  return root
 }
 
 describe('hook.sh spool-first delivery', () => {
@@ -118,10 +135,12 @@ describe('hook.sh spool-first delivery', () => {
   it('arms the collector after spooling when its health predicate is false', async () => {
     const root = makeDataRoot('hook-unhealthy')
     roots.push(root)
+    const sourceRoot = bootstrappedSourceRoot()
+    roots.push(sourceRoot)
 
-    await runHook(root)
+    await runHook(root, { OBSERVE_ROOT: sourceRoot })
 
     await waitFor(() => existsSync(join(root, 'runtime/collector.lock')), { timeoutMs: 5_000 })
     expect(pendingEntry(root).rawHook.payload).toMatchObject({ session_id: 'hook-session' })
-  })
+  }, 30_000)
 })
