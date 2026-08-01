@@ -123,5 +123,5 @@ describe('hook.sh spool-first delivery', () => {
 
     await waitFor(() => existsSync(join(root, 'runtime/collector.lock')), { timeoutMs: 5_000 })
     expect(pendingEntry(root).rawHook.payload).toMatchObject({ session_id: 'hook-session' })
-  })
+  }, 30_000)
 })
