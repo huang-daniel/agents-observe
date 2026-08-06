@@ -1,15 +1,31 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { cleanup, screen, fireEvent } from '@testing-library/react'
+import { cleanup, screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '@/test/test-utils'
 import { useUIStore } from '@/stores/ui-store'
 import { ConstellationView } from './constellation-view'
 import type { RecentSession } from '@/types'
+import type { ProjectCostSummary } from '@/lib/api-client'
 
 // The constellation fetches its own activity-windowed sessions; mock that hook.
 let mockWindowed: { data: RecentSession[]; isLoading: boolean } = { data: [], isLoading: false }
 vi.mock('@/hooks/use-windowed-sessions', () => ({
   useWindowedSessions: () => mockWindowed,
 }))
+
+// Per-project cost/token label — mock the summary endpoint directly so
+// tests control what each well's label renders without a real server.
+let mockCostSummaries: Record<number, ProjectCostSummary | null> = {}
+vi.mock('@/lib/api-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api-client')>()
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      getProjectCostSummary: (projectId: number) =>
+        Promise.resolve(mockCostSummaries[projectId] ?? null),
+    },
+  }
+})
 
 function session(id: string, over: Partial<RecentSession> = {}): RecentSession {
   return {
@@ -36,6 +52,7 @@ afterEach(() => {
   cleanup()
   useUIStore.getState().clearPreviewSession()
   mockWindowed = { data: [], isLoading: false }
+  mockCostSummaries = {}
 })
 
 describe('ConstellationView', () => {
@@ -92,6 +109,43 @@ describe('ConstellationView', () => {
 
     fireEvent.click(screen.getByLabelText('Show controls'))
     expect(screen.getByText('Deep Space')).toBeTruthy() // expanded again
+  })
+
+  it('shows a cost/token label on the well once the project cost summary loads', async () => {
+    mockWindowed = { data: [session('swift-otter', { projectId: 1 })], isLoading: false }
+    mockCostSummaries = {
+      1: {
+        projectId: 1,
+        inputTokens: 900_000,
+        outputTokens: 100_000,
+        costCents: 1234,
+        sessionsTotal: 1,
+        sessionsWithUsage: 1,
+        hasData: true,
+        cachedAt: Date.now(),
+      },
+    }
+    renderWithProviders(<ConstellationView {...props} />)
+    await waitFor(() => expect(screen.getByText('1.0M tok · $12.34')).toBeTruthy())
+  })
+
+  it('renders no cost label when the project has no transcript-derived usage data', async () => {
+    mockWindowed = { data: [session('swift-otter', { projectId: 1 })], isLoading: false }
+    mockCostSummaries = {
+      1: {
+        projectId: 1,
+        inputTokens: 0,
+        outputTokens: 0,
+        costCents: null,
+        sessionsTotal: 1,
+        sessionsWithUsage: 0,
+        hasData: false,
+        cachedAt: Date.now(),
+      },
+    }
+    renderWithProviders(<ConstellationView {...props} />)
+    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
+    expect(screen.queryByText(/tok/)).toBeNull()
   })
 
   it('sets the sidebar preview on focus and clears it on background click', () => {

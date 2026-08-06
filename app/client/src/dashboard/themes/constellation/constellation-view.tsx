@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useQueries } from '@tanstack/react-query'
 import { useUIStore } from '@/stores/ui-store'
 import { useNotificationStore } from '@/components/sidebar/notification-indicator'
 import { useWindowedSessions } from '@/hooks/use-windowed-sessions'
 import type { DashboardThemeProps } from '../../types'
 import type { RecentSession } from '@/types'
+import { api } from '@/lib/api-client'
+import { fmtCents } from '@/components/settings/sections/token-usage-section'
 import {
   radius,
   heat,
@@ -69,6 +72,20 @@ interface Cam {
 
 function projectKeyOf(s: RecentSession): string {
   return s.projectId != null ? `p${s.projectId}` : 'unassigned'
+}
+
+/** projectKeyOf's inverse for the well keys that came from a real project
+ *  (`unassigned` has no cost summary to fetch — it isn't a project row). */
+function projectIdFromWellKey(key: string): number | null {
+  if (!key.startsWith('p')) return null
+  const id = Number(key.slice(1))
+  return Number.isFinite(id) ? id : null
+}
+
+function fmtTokensCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M tok`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K tok`
+  return `${n} tok`
 }
 
 const clampNum = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v)
@@ -185,6 +202,37 @@ export function ConstellationView({ onOpenSession }: DashboardThemeProps) {
     for (const [key, e] of byProject) names.set(key, e.name)
     return { wells: packed.wells, bounds: packed.bounds, wellNames: names }
   }, [sessions])
+
+  // Per-well cost/token label. One request per visible project, cached
+  // server-side (see project-cost-summary.ts) so re-renders/poll ticks
+  // don't force a full transcript re-parse. "Unassigned" has no project
+  // row to query. staleTime matches the server cache TTL.
+  const wellProjectIds = useMemo(
+    () => [...new Set(wells.map((w) => projectIdFromWellKey(w.key)).filter((id) => id != null))],
+    [wells],
+  )
+  const costSummaryQueries = useQueries({
+    queries: wellProjectIds.map((projectId) => ({
+      queryKey: ['project-cost-summary', projectId],
+      queryFn: () => api.getProjectCostSummary(projectId),
+      staleTime: 60_000,
+      refetchInterval: 60_000,
+    })),
+  })
+  const wellCostLabels = useMemo(() => {
+    const out = new Map<string, string>()
+    wellProjectIds.forEach((projectId, i) => {
+      const summary = costSummaryQueries[i]?.data
+      if (!summary || !summary.hasData) return
+      const tokens = summary.inputTokens + summary.outputTokens
+      const label =
+        summary.costCents == null
+          ? fmtTokensCompact(tokens)
+          : `${fmtTokensCompact(tokens)} · ${fmtCents(summary.costCents)}`
+      out.set(`p${projectId}`, label)
+    })
+    return out
+  }, [wellProjectIds, costSummaryQueries])
 
   // ---- imperative state shared with the animation loop (no re-render) ----
   const simRef = useRef(new Map<string, SimNode>())
@@ -585,6 +633,15 @@ export function ConstellationView({ onOpenSession }: DashboardThemeProps) {
                 >
                   {wellNames.get(w.key)}
                 </text>
+                {wellCostLabels.has(w.key) && (
+                  <text
+                    className={'cst-well-cost-label' + (small ? ' cst-well-cost-label--small' : '')}
+                    x={0}
+                    y={-w.r - 24}
+                  >
+                    {wellCostLabels.get(w.key)}
+                  </text>
+                )}
               </g>
             )
           })}

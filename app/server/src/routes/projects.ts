@@ -2,6 +2,8 @@ import { Hono } from 'hono'
 import type { EventStore } from '../storage/types'
 import type { Project } from '../types'
 import { apiError } from '../errors'
+import { config } from '../config'
+import { getProjectCostSummary } from '../transcript-parser/project-cost-summary'
 
 type Env = {
   Variables: {
@@ -93,6 +95,30 @@ router.get('/projects/:id/sessions', async (c) => {
         : [],
   }))
   return c.json(sessions)
+})
+
+// GET /projects/:id/cost-summary — token/cost totals across every
+// session in the project, for the constellation view's per-well label.
+// Cached in-memory per project (see project-cost-summary.ts) so this
+// doesn't re-parse every session's transcript on every poll.
+router.get('/projects/:id/cost-summary', async (c) => {
+  if (!config.transcriptStats.enabled) {
+    return c.json(
+      {
+        error: 'disabled',
+        message:
+          'Transcript parsing is disabled. Unset AGENTS_OBSERVE_TRANSCRIPT_STATS (or remove the =0 override) on the server to re-enable.',
+      },
+      404,
+    )
+  }
+
+  const store = c.get('store')
+  const projectId = Number(c.req.param('id'))
+  if (isNaN(projectId)) return apiError(c, 400, 'Invalid project ID')
+
+  const summary = await getProjectCostSummary(projectId, store)
+  return c.json(summary)
 })
 
 // PATCH /projects/:id — update project fields (name)
