@@ -66,13 +66,14 @@ directly.
 
 Parses the source-of-truth jsonl transcripts on demand to surface
 per-prompt / per-agent token usage, model info, and cost estimates in
-the Session Stats tab. Pricing is fetched from `models.dev` and cached
-on disk at `<data dir>/models-dev.json` (24h TTL). Enabled by default;
-set the flag below to `0` to disable.
+the Session Stats tab and the constellation view's per-project well
+label. Pricing is fetched from `models.dev` and cached on disk at
+`<data dir>/models-dev.json` (24h TTL). Enabled by default; set the
+flag below to `0` to disable.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `AGENTS_OBSERVE_TRANSCRIPT_STATS` | `1` | Enables the `/api/sessions/:id/transcript-stats` route. Set to `0` to disable. Surfaced on `/api/health` as `transcriptStatsEnabled` so the client can skip the round-trip when off. |
+| `AGENTS_OBSERVE_TRANSCRIPT_STATS` | `1` | Enables the `/api/sessions/:id/transcript-stats` and `/api/projects/:id/cost-summary` routes. Set to `0` to disable both. Surfaced on `/api/health` as `transcriptStatsEnabled` so the client can skip the round-trip when off. |
 
 The server reads each session's `transcript_path` straight off the host filesystem. A missing transcript is reported as `file_not_found` rather than failing the request — a user without Codex installed needs no configuration at all.
 
