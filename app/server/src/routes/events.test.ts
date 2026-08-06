@@ -372,6 +372,109 @@ describe('POST /api/events — callbacks (`requests` array)', () => {
   })
 })
 
+describe('POST /api/events — session titling from first user prompt', () => {
+  test('retitles a fallback-slugged session from its first UserPromptSubmit', async () => {
+    // Simulate the fallback slug already set (as the getSessionInfo
+    // callback would have done for a detached-HEAD worktree session).
+    await store.upsertSession(
+      'sess-1',
+      null,
+      'HEAD:sess:claude',
+      { git: { branch: 'HEAD' } },
+      1000,
+      '/x.jsonl',
+      '/cwd',
+    )
+
+    await postEvent({
+      agentClass: 'claude-code',
+      sessionId: 'sess-1',
+      agentId: 'sess-1',
+      hookName: 'UserPromptSubmit',
+      timestamp: 2000,
+      payload: { prompt: 'fix the login bug on the settings page' },
+    })
+
+    const session = await store.getSessionById('sess-1')
+    expect(session.slug).toBe('fix the login bug on the settings page')
+    expect(allBroadcasts).toContainEqual({
+      type: 'session_update',
+      data: { id: 'sess-1', slug: 'fix the login bug on the settings page' },
+    })
+  })
+
+  test('titles a session with no slug yet from its first prompt', async () => {
+    await postEvent({
+      agentClass: 'claude-code',
+      sessionId: 'sess-1',
+      agentId: 'sess-1',
+      hookName: 'UserPromptSubmit',
+      timestamp: 1000,
+      payload: { prompt: 'add a login button' },
+    })
+    const session = await store.getSessionById('sess-1')
+    expect(session.slug).toBe('add a login button')
+  })
+
+  test('does not overwrite an explicit/native slug', async () => {
+    await store.upsertSession(
+      'sess-1',
+      null,
+      'refactored-bouncing-cake',
+      null,
+      1000,
+      '/x.jsonl',
+      '/cwd',
+    )
+    await postEvent({
+      agentClass: 'claude-code',
+      sessionId: 'sess-1',
+      agentId: 'sess-1',
+      hookName: 'UserPromptSubmit',
+      timestamp: 2000,
+      payload: { prompt: 'fix the login bug' },
+    })
+    const session = await store.getSessionById('sess-1')
+    expect(session.slug).toBe('refactored-bouncing-cake')
+  })
+
+  test('does not retitle from a second UserPromptSubmit', async () => {
+    await postEvent({
+      agentClass: 'claude-code',
+      sessionId: 'sess-1',
+      agentId: 'sess-1',
+      hookName: 'UserPromptSubmit',
+      timestamp: 1000,
+      payload: { prompt: 'first prompt' },
+    })
+    allBroadcasts.length = 0
+    await postEvent({
+      agentClass: 'claude-code',
+      sessionId: 'sess-1',
+      agentId: 'sess-1',
+      hookName: 'UserPromptSubmit',
+      timestamp: 2000,
+      payload: { prompt: 'second prompt, totally different task' },
+    })
+    const session = await store.getSessionById('sess-1')
+    expect(session.slug).toBe('first prompt')
+    expect(allBroadcasts.some((b: any) => b.type === 'session_update')).toBe(false)
+  })
+
+  test('ignores UserPromptSubmit events with no prompt text', async () => {
+    await postEvent({
+      agentClass: 'claude-code',
+      sessionId: 'sess-1',
+      agentId: 'sess-1',
+      hookName: 'UserPromptSubmit',
+      timestamp: 1000,
+      payload: {},
+    })
+    const session = await store.getSessionById('sess-1')
+    expect(session.slug).toBeNull()
+  })
+})
+
 describe('POST /api/events — dedup', () => {
   const baseEnv = {
     agentClass: 'claude-code',

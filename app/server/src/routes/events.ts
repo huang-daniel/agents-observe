@@ -21,6 +21,7 @@ import { DuplicateEventSignatureError } from '../storage/types'
 import type { EventEnvelope, ParsedEvent } from '../types'
 import { validateEnvelope, EnvelopeValidationError } from '../parser'
 import { resolveProject } from '../services/project-resolver'
+import { deriveTitleFromPrompt, isReplaceableFallbackSlug } from '../services/session-title'
 import { computeEventSignature } from '../utils/event-signature'
 import { config } from '../config'
 import { apiError } from '../errors'
@@ -173,6 +174,46 @@ router.post('/events', async (c) => {
         }
       }
       throw err
+    }
+
+    // ---- Step 5.5: title from the first user prompt -----------------------
+    // The fallback slug (`routes/callbacks.ts`) is low-signal — for a
+    // detached-HEAD session it's just "HEAD:<uuidPrefix>[:<agent>]". Once
+    // the session's first real prompt lands, retitle from it — unless a
+    // genuine explicit slug (or an already-derived title) is in place.
+    if (envelope.hookName === 'UserPromptSubmit') {
+      const promptText =
+        typeof envelope.payload?.prompt === 'string' ? envelope.payload.prompt : null
+      if (promptText) {
+        const priorPrompts = await store.getEventsForSession(envelope.sessionId, {
+          hookName: 'UserPromptSubmit',
+          limit: 2,
+        })
+        const isFirstPrompt = priorPrompts.length === 1
+        if (isFirstPrompt) {
+          const metadata = session?.metadata
+            ? (JSON.parse(session.metadata) as { git?: { branch?: string | null } })
+            : null
+          const gitBranch = typeof metadata?.git?.branch === 'string' ? metadata.git.branch : null
+          if (
+            isReplaceableFallbackSlug(
+              session?.slug ?? null,
+              envelope.sessionId,
+              gitBranch,
+              envelope.agentClass,
+            )
+          ) {
+            const title = deriveTitleFromPrompt(promptText)
+            if (title) {
+              await store.updateSessionSlug(envelope.sessionId, title)
+              broadcastToAll({
+                type: 'session_update',
+                data: { id: envelope.sessionId, slug: title } as any,
+              })
+            }
+          }
+        }
+      }
     }
 
     // ---- Step 6: apply flags in spec order (clear → start → stop) --------

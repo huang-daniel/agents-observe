@@ -21,6 +21,7 @@ import { dirname } from 'node:path'
 import type { EventStore } from '../storage/types'
 import type { EventEnvelopeCreationHints, EventEnvelopeFlags } from '../types'
 import { deriveSlugFromPath } from '../utils/slug'
+import { resolveGitOriginProjectSlug } from './git-origin'
 
 const WORKTREE_SEGMENT_RE = /^\.?worktrees?$/
 
@@ -106,6 +107,18 @@ export async function resolveProject(
     if (worktreeSlug) {
       const existing = await store.getProjectBySlug(worktreeSlug)
       if (existing) return existing.id
+    }
+
+    // Worktree-based launchers whose cwd doesn't sit under the real repo
+    // (e.g. no-mistakes's `~/.no-mistakes/worktrees/<hash>/<ULID>`) don't
+    // match the heuristic above. Resolve the real origin repo from the
+    // worktree's `.git` file instead — this find-or-creates, so a fresh
+    // repo seen for the first time via a worktree still gets its own
+    // project rather than falling through to the ULID basename.
+    const originSlug = await resolveGitOriginProjectSlug(input.startCwd)
+    if (originSlug) {
+      const result = await store.findOrCreateProjectBySlug(originSlug)
+      return result.id
     }
 
     const slugSource = input.startCwd ?? transcriptBasedir
