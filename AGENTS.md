@@ -65,6 +65,7 @@ Key points:
 - Collector supervision (locks, heartbeat, process identity) has its own contract and invariants — read [docs/collector-supervision.md](docs/collector-supervision.md) before touching `hooks/scripts/supervision/` or `app/server/src/supervision/`. Those two are mirrored implementations of one on-disk contract; tests assert they agree, so change them together
 - `hooks/scripts/hook.sh` is the **only** way any agent starts or reaches the collector — every event spools, then arms the supervisor if it isn't healthy. Don't add a second start path; `observe_cli.mjs start/stop/restart` drive the same arm
 - The collector always runs as a host Node process. A plugin install is a source-only clone, so the first start bootstraps it (`observe_bootstrap_collector`): server deps, then the client build. Everything the plugin needs at runtime therefore has to be buildable from this tree with `npm` — see [docs/collector-supervision.md](docs/collector-supervision.md)
+- Project resolution (`app/server/src/services/project-resolver.ts`) and session titling (`app/server/src/services/session-title.ts`, wired into `routes/events.ts`'s `UserPromptSubmit` handling and `routes/callbacks.ts`'s `getSessionInfo` callback) are two halves of the same "don't show meaningless auto-generated identities" contract — read both together before changing either
 
 ## Commit Convention
 
