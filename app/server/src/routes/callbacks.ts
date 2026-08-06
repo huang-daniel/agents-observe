@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import type { EventStore } from '../storage/types'
 import { apiError } from '../errors'
 import { config } from '../config'
+import { buildFallbackSlug } from '../services/session-title'
 
 type Env = {
   Variables: {
@@ -83,17 +84,9 @@ router.post('/callbacks/session-info/:sessionId', async (c) => {
     // calls out non-default agents. When agentClass is missing the
     // trailing segment is dropped: "<branch>:<uuidPrefix>".
     // Leaving slug null lets the next event re-trigger the callback.
-    const uuidPrefix = sessionId.split('-')[0]
     const agentClass =
       typeof data.agentClass === 'string' && data.agentClass.trim() ? data.agentClass.trim() : null
-    const agentShortName = agentClass ? (agentClass.split('-')[0] ?? null) : null
-    const slug =
-      explicitSlug ??
-      (gitBranch
-        ? agentShortName
-          ? `${gitBranch}:${uuidPrefix}:${agentShortName}`
-          : `${gitBranch}:${uuidPrefix}`
-        : null)
+    const slug = explicitSlug ?? buildFallbackSlug(sessionId, gitBranch, agentClass)
     if (slug) {
       await store.updateSessionSlug(sessionId, slug)
       broadcastToAll({ type: 'session_update', data: { id: sessionId, slug } as any })

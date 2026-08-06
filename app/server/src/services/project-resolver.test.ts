@@ -1,4 +1,7 @@
-import { describe, test, expect, beforeEach } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { SqliteAdapter } from '../storage/sqlite-adapter'
 import { findExistingWorktreeProjectSlug, resolveProject } from './project-resolver'
 
@@ -269,6 +272,96 @@ describe('resolveProject', () => {
     expect(result).not.toBeNull()
     const proj = await store.getProjectById(result!)
     expect(proj.slug).toBe('feat-foo')
+  })
+
+  describe('git-origin fallback (no-mistakes-style worktree layout)', () => {
+    let root = ''
+
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), 'project-resolver-git-origin-'))
+    })
+
+    afterEach(() => {
+      rmSync(root, { recursive: true, force: true })
+    })
+
+    function makeNoMistakesStyleWorktree(originUrl: string): string {
+      const bareDir = join(root, 'repos', 'abc123.git')
+      const adminDir = join(bareDir, 'worktrees', '01ULID')
+      const checkoutDir = join(root, 'worktrees', 'abc123', '01ULID')
+      mkdirSync(adminDir, { recursive: true })
+      mkdirSync(checkoutDir, { recursive: true })
+      writeFileSync(join(bareDir, 'config'), `[remote "origin"]\n\turl = ${originUrl}\n`)
+      writeFileSync(join(adminDir, 'commondir'), '../..\n')
+      writeFileSync(join(checkoutDir, '.git'), `gitdir: ${adminDir}\n`)
+      return checkoutDir
+    }
+
+    test('resolves the real repo instead of the ULID basename, and creates the project', async () => {
+      const checkoutDir = makeNoMistakesStyleWorktree(
+        'https://github.com/huang-daniel/yogi-flow.git',
+      )
+      const result = await resolveProject(store, {
+        sessionId: 'nm-sess',
+        flags: { resolveProject: true },
+        currentProjectId: null,
+        startCwd: checkoutDir,
+        transcriptPath: null,
+      })
+      expect(result).not.toBeNull()
+      const proj = await store.getProjectById(result!)
+      expect(proj.slug).toBe('yogi-flow')
+    })
+
+    test('joins an existing project created by a prior worktree run of the same repo', async () => {
+      const existing = await store.findOrCreateProjectBySlug('yogi-flow')
+      const checkoutDir = makeNoMistakesStyleWorktree('git@github.com:huang-daniel/yogi-flow.git')
+      const result = await resolveProject(store, {
+        sessionId: 'nm-sess-2',
+        flags: { resolveProject: true },
+        currentProjectId: null,
+        startCwd: checkoutDir,
+        transcriptPath: null,
+      })
+      expect(result).toBe(existing.id)
+    })
+
+    test('falls through to ULID basename when the worktree has no resolvable origin', async () => {
+      const bareDir = join(root, 'repos', 'abc123.git')
+      const adminDir = join(bareDir, 'worktrees', '01ULID')
+      const checkoutDir = join(root, 'worktrees', 'abc123', '01ULID')
+      mkdirSync(adminDir, { recursive: true })
+      mkdirSync(checkoutDir, { recursive: true })
+      writeFileSync(join(bareDir, 'config'), '[core]\n\trepositoryformatversion = 0\n')
+      writeFileSync(join(adminDir, 'commondir'), '../..\n')
+      writeFileSync(join(checkoutDir, '.git'), `gitdir: ${adminDir}\n`)
+
+      const result = await resolveProject(store, {
+        sessionId: 'nm-sess-3',
+        flags: { resolveProject: true },
+        currentProjectId: null,
+        startCwd: checkoutDir,
+        transcriptPath: null,
+      })
+      expect(result).not.toBeNull()
+      const proj = await store.getProjectById(result!)
+      expect(proj.slug).toBe('01ulid')
+    })
+
+    test('plain non-worktree checkout is unaffected (still uses cwd basename)', async () => {
+      const plainDir = join(root, 'my-real-project')
+      mkdirSync(join(plainDir, '.git'), { recursive: true })
+      const result = await resolveProject(store, {
+        sessionId: 'plain-sess',
+        flags: { resolveProject: true },
+        currentProjectId: null,
+        startCwd: plainDir,
+        transcriptPath: null,
+      })
+      expect(result).not.toBeNull()
+      const proj = await store.getProjectById(result!)
+      expect(proj.slug).toBe('my-real-project')
+    })
   })
 })
 
