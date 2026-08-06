@@ -137,7 +137,7 @@ This matters because:
 - Filter by agent, tool type, or search across all events
 - Expand any event to see the full payload, command, and result
 - Click timeline icons to jump to specific events in the stream
-- Browse historical sessions with human-readable names (e.g., "twinkly-hugging-dragon")
+- Browse historical sessions titled from their first prompt, not a raw session ID
 
 ## Architecture
 
