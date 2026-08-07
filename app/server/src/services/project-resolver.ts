@@ -68,18 +68,36 @@ export interface ResolveProjectInput {
   currentProjectId: number | null
 }
 
+/**
+ * 'pipeline' — resolved by walking a worktree cwd (or its git origin) to
+ * a parent project, i.e. the session was launched by a worktree-based
+ * verification pipeline (no-mistakes or any future launcher matching the
+ * same `WORKTREE_SEGMENT_RE` / git-origin-walk path) rather than run
+ * directly in the project's own checkout.
+ * 'direct' — every other resolution path (explicit meta, sibling match,
+ * cwd/transcript basename fallback).
+ * `null` — session is still unassigned, or already had a project (the
+ * short-circuit path doesn't re-derive origin).
+ */
+export type SessionOriginKind = 'pipeline' | 'direct'
+
+export interface ResolveProjectResult {
+  projectId: number | null
+  originKind: SessionOriginKind | null
+}
+
 export async function resolveProject(
   store: EventStore,
   input: ResolveProjectInput,
-): Promise<number | null> {
+): Promise<ResolveProjectResult> {
   if (input.currentProjectId !== null && input.currentProjectId !== undefined) {
-    return input.currentProjectId
+    return { projectId: input.currentProjectId, originKind: null }
   }
 
   // Explicit project.id wins (validated to exist).
   if (input.meta?.id !== undefined && input.meta.id !== null) {
     const exists = await store.getProjectById(input.meta.id)
-    if (exists) return exists.id
+    if (exists) return { projectId: exists.id, originKind: 'direct' }
     // Fall through if the id is invalid — better to attempt slug/sibling
     // resolution than leave the session unassigned because of a stale id.
   }
@@ -87,7 +105,7 @@ export async function resolveProject(
   // Explicit project.slug — find or create.
   if (input.meta?.slug) {
     const result = await store.findOrCreateProjectBySlug(input.meta.slug)
-    return result.id
+    return { projectId: result.id, originKind: 'direct' }
   }
 
   // Sibling matching only fires on explicit flag.
@@ -98,7 +116,7 @@ export async function resolveProject(
       transcriptBasedir,
       excludeSessionId: input.sessionId,
     })
-    if (sibling) return sibling.projectId
+    if (sibling) return { projectId: sibling.projectId, originKind: 'direct' }
 
     // Worktree-aware match against an EXISTING project. Match-only —
     // never creates from the walk-up candidate, so unrelated ancestor
@@ -106,7 +124,7 @@ export async function resolveProject(
     const worktreeSlug = findExistingWorktreeProjectSlug(input.startCwd)
     if (worktreeSlug) {
       const existing = await store.getProjectBySlug(worktreeSlug)
-      if (existing) return existing.id
+      if (existing) return { projectId: existing.id, originKind: 'pipeline' }
     }
 
     // Worktree-based launchers whose cwd doesn't sit under the real repo
@@ -118,16 +136,16 @@ export async function resolveProject(
     const originSlug = await resolveGitOriginProjectSlug(input.startCwd)
     if (originSlug) {
       const result = await store.findOrCreateProjectBySlug(originSlug)
-      return result.id
+      return { projectId: result.id, originKind: 'pipeline' }
     }
 
     const slugSource = input.startCwd ?? transcriptBasedir
     if (slugSource) {
       const slug = deriveSlugFromPath(slugSource)
       const result = await store.findOrCreateProjectBySlug(slug)
-      return result.id
+      return { projectId: result.id, originKind: 'direct' }
     }
   }
 
-  return null
+  return { projectId: null, originKind: null }
 }

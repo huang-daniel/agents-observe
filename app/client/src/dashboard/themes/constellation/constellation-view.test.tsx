@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { cleanup, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, cleanup, screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '@/test/test-utils'
 import { useUIStore } from '@/stores/ui-store'
 import { ConstellationView } from './constellation-view'
@@ -42,6 +42,24 @@ function session(id: string, over: Partial<RecentSession> = {}): RecentSession {
     agentClasses: ['ClaudeCode'],
     eventCount: 100,
     agentCount: 3,
+    ...over,
+  }
+}
+
+function costSummary(over: Partial<ProjectCostSummary> = {}): ProjectCostSummary {
+  return {
+    projectId: 1,
+    inputTokens: 0,
+    outputTokens: 0,
+    costCents: null,
+    sessionsTotal: 1,
+    sessionsWithUsage: 0,
+    hasData: false,
+    cachedAt: Date.now(),
+    bySource: {
+      pipeline: { inputTokens: 0, outputTokens: 0, costCents: null, sessionsWithUsage: 0 },
+      direct: { inputTokens: 0, outputTokens: 0, costCents: null, sessionsWithUsage: 0 },
+    },
     ...over,
   }
 }
@@ -94,6 +112,66 @@ describe('ConstellationView', () => {
     raf.mockRestore()
   })
 
+  it('zooms on wheel over the canvas and prevents the page from scrolling with it', () => {
+    mockWindowed = { data: [session('a')], isLoading: false }
+    // The component schedules two independent rAF chains (the animation
+    // loop's self-rescheduling `frame`, and the wheel handler's one-off
+    // batched `setViewH` flush) — queue every pending callback per tick
+    // and flush them all, rather than tracking a single latest callback,
+    // so neither chain silently displaces the other.
+    let queue: FrameRequestCallback[] = []
+    const raf = vi
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((cb: FrameRequestCallback) => {
+        queue.push(cb)
+        return queue.length
+      })
+    const tick = () => {
+      const pending = queue
+      queue = []
+      act(() => pending.forEach((cb) => cb(0)))
+    }
+
+    const { container } = renderWithProviders(<ConstellationView {...props} />)
+    const svg = container.querySelector('svg.constellation__svg') as SVGSVGElement
+    vi.spyOn(svg, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 800,
+      height: 500,
+      right: 800,
+      bottom: 500,
+      x: 0,
+      y: 0,
+      toJSON: () => {},
+    } as DOMRect)
+
+    // Let the camera settle to its initial position before measuring.
+    for (let i = 0; i < 5; i++) tick()
+    const before = svg.getAttribute('viewBox')!.split(' ').map(Number)
+
+    const wheelEvent = new WheelEvent('wheel', {
+      deltaY: -400, // scroll "up" — zoom in
+      clientX: 200,
+      clientY: 200,
+      bubbles: true,
+      cancelable: true,
+    })
+    const notCancelled = svg.dispatchEvent(wheelEvent)
+    // dispatchEvent returns false when preventDefault() was called — this is
+    // what keeps the page/site from also scrolling while zooming the canvas.
+    expect(notCancelled).toBe(false)
+
+    for (let i = 0; i < 30; i++) tick()
+    const after = svg.getAttribute('viewBox')!.split(' ').map(Number)
+
+    // Zooming in shrinks the world-space viewBox.
+    expect(after[2]).toBeLessThan(before[2])
+    expect(after[3]).toBeLessThan(before[3])
+
+    raf.mockRestore()
+  })
+
   it('renders inline sliders and collapses the controls to a gear', () => {
     mockWindowed = { data: [session('a')], isLoading: false }
     renderWithProviders(<ConstellationView {...props} />)
@@ -114,16 +192,13 @@ describe('ConstellationView', () => {
   it('shows a cost/token label on the well once the project cost summary loads', async () => {
     mockWindowed = { data: [session('swift-otter', { projectId: 1 })], isLoading: false }
     mockCostSummaries = {
-      1: {
-        projectId: 1,
+      1: costSummary({
         inputTokens: 900_000,
         outputTokens: 100_000,
         costCents: 1234,
-        sessionsTotal: 1,
         sessionsWithUsage: 1,
         hasData: true,
-        cachedAt: Date.now(),
-      },
+      }),
     }
     renderWithProviders(<ConstellationView {...props} />)
     await waitFor(() => expect(screen.getByText('1.0M tok · $12.34')).toBeTruthy())
@@ -131,21 +206,68 @@ describe('ConstellationView', () => {
 
   it('renders no cost label when the project has no transcript-derived usage data', async () => {
     mockWindowed = { data: [session('swift-otter', { projectId: 1 })], isLoading: false }
-    mockCostSummaries = {
-      1: {
-        projectId: 1,
-        inputTokens: 0,
-        outputTokens: 0,
-        costCents: null,
-        sessionsTotal: 1,
-        sessionsWithUsage: 0,
-        hasData: false,
-        cachedAt: Date.now(),
-      },
-    }
+    mockCostSummaries = { 1: costSummary() }
     renderWithProviders(<ConstellationView {...props} />)
     await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
     expect(screen.queryByText(/tok/)).toBeNull()
+  })
+
+  it('shows a pipeline-vs-direct split label once a pipeline session has usage', async () => {
+    mockWindowed = { data: [session('swift-otter', { projectId: 1 })], isLoading: false }
+    mockCostSummaries = {
+      1: costSummary({
+        inputTokens: 1_000_000,
+        outputTokens: 100_000,
+        costCents: 1300,
+        sessionsWithUsage: 2,
+        hasData: true,
+        bySource: {
+          pipeline: {
+            inputTokens: 300_000,
+            outputTokens: 30_000,
+            costCents: 400,
+            sessionsWithUsage: 1,
+          },
+          direct: {
+            inputTokens: 700_000,
+            outputTokens: 70_000,
+            costCents: 900,
+            sessionsWithUsage: 1,
+          },
+        },
+      }),
+    }
+    renderWithProviders(<ConstellationView {...props} />)
+    await waitFor(() =>
+      expect(
+        screen.getByText('◆ pipeline 330.0K tok/$4.00 · direct 770.0K tok/$9.00'),
+      ).toBeTruthy(),
+    )
+  })
+
+  it('does not show a split label when the project has no pipeline-sourced sessions', async () => {
+    mockWindowed = { data: [session('swift-otter', { projectId: 1 })], isLoading: false }
+    mockCostSummaries = {
+      1: costSummary({
+        inputTokens: 900_000,
+        outputTokens: 100_000,
+        costCents: 1234,
+        sessionsWithUsage: 1,
+        hasData: true,
+        bySource: {
+          pipeline: { inputTokens: 0, outputTokens: 0, costCents: 0, sessionsWithUsage: 0 },
+          direct: {
+            inputTokens: 900_000,
+            outputTokens: 100_000,
+            costCents: 1234,
+            sessionsWithUsage: 1,
+          },
+        },
+      }),
+    }
+    renderWithProviders(<ConstellationView {...props} />)
+    await waitFor(() => expect(screen.getByText('1.0M tok · $12.34')).toBeTruthy())
+    expect(screen.queryByText(/◆ pipeline/)).toBeNull()
   })
 
   it('sets the sidebar preview on focus and clears it on background click', () => {

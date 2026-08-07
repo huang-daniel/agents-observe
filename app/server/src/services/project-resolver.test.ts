@@ -39,7 +39,8 @@ describe('resolveProject', () => {
       startCwd: null,
       transcriptPath: null,
     })
-    expect(result).toBe(id.id)
+    expect(result.projectId).toBe(id.id)
+    expect(result.originKind).toBeNull()
   })
 
   test('honors explicit _meta.project.id', async () => {
@@ -51,7 +52,8 @@ describe('resolveProject', () => {
       startCwd: null,
       transcriptPath: null,
     })
-    expect(result).toBe(proj.id)
+    expect(result.projectId).toBe(proj.id)
+    expect(result.originKind).toBe('direct')
   })
 
   test('explicit _meta.project.slug — creates if missing', async () => {
@@ -62,9 +64,10 @@ describe('resolveProject', () => {
       startCwd: null,
       transcriptPath: null,
     })
-    expect(result).not.toBeNull()
+    expect(result.projectId).not.toBeNull()
+    expect(result.originKind).toBe('direct')
     const proj = await store.getProjectBySlug('fresh-slug')
-    expect(proj?.id).toBe(result)
+    expect(proj?.id).toBe(result.projectId)
   })
 
   test('explicit _meta.project.slug — finds existing', async () => {
@@ -76,7 +79,7 @@ describe('resolveProject', () => {
       startCwd: null,
       transcriptPath: null,
     })
-    expect(result).toBe(existing.id)
+    expect(result.projectId).toBe(existing.id)
   })
 
   test('falls through when explicit project.id does not exist', async () => {
@@ -87,7 +90,8 @@ describe('resolveProject', () => {
       startCwd: null,
       transcriptPath: null,
     })
-    expect(result).toBeNull()
+    expect(result.projectId).toBeNull()
+    expect(result.originKind).toBeNull()
   })
 
   test('flags.resolveProject — sibling match by start_cwd', async () => {
@@ -100,7 +104,8 @@ describe('resolveProject', () => {
       startCwd: '/Users/joe/repo',
       transcriptPath: null,
     })
-    expect(result).toBe(proj.id)
+    expect(result.projectId).toBe(proj.id)
+    expect(result.originKind).toBe('direct')
   })
 
   test('flags.resolveProject — sibling match by transcript basedir', async () => {
@@ -117,7 +122,8 @@ describe('resolveProject', () => {
       startCwd: null,
       transcriptPath: '/Users/joe/.claude/projects/my-app/session-b.jsonl',
     })
-    expect(result).toBe(proj.id)
+    expect(result.projectId).toBe(proj.id)
+    expect(result.originKind).toBe('direct')
   })
 
   test('flags.resolveProject — cwd takes precedence over a shared transcript basedir', async () => {
@@ -130,7 +136,7 @@ describe('resolveProject', () => {
     })
     await seedSession({
       id: 'alpha-session',
-      projectId: alpha,
+      projectId: alpha.projectId,
       startCwd: '/repos/alpha',
       transcriptPath: '/Users/joe/.codex/sessions/2026/07/30/rollout-alpha.jsonl',
     })
@@ -143,8 +149,8 @@ describe('resolveProject', () => {
       transcriptPath: '/Users/joe/.codex/sessions/2026/07/30/rollout-beta.jsonl',
     })
 
-    expect(beta).not.toBe(alpha)
-    expect((await store.getProjectById(beta!)).slug).toBe('beta')
+    expect(beta.projectId).not.toBe(alpha.projectId)
+    expect((await store.getProjectById(beta.projectId!)).slug).toBe('beta')
   })
 
   test('flags.resolveProject — most recent sibling wins', async () => {
@@ -169,7 +175,7 @@ describe('resolveProject', () => {
       startCwd: '/repo',
       transcriptPath: null,
     })
-    expect(result).toBe(projNew.id)
+    expect(result.projectId).toBe(projNew.id)
   })
 
   test('flags.resolveProject — no siblings → creates new project from cwd basename', async () => {
@@ -180,8 +186,9 @@ describe('resolveProject', () => {
       startCwd: '/Users/joe/Development/my-app',
       transcriptPath: null,
     })
-    expect(result).not.toBeNull()
-    const proj = await store.getProjectById(result!)
+    expect(result.projectId).not.toBeNull()
+    expect(result.originKind).toBe('direct')
+    const proj = await store.getProjectById(result.projectId!)
     expect(proj.slug).toBe('my-app')
   })
 
@@ -193,8 +200,8 @@ describe('resolveProject', () => {
       startCwd: null,
       transcriptPath: '/Users/joe/.claude/projects/my-app/session.jsonl',
     })
-    expect(result).not.toBeNull()
-    const proj = await store.getProjectById(result!)
+    expect(result.projectId).not.toBeNull()
+    const proj = await store.getProjectById(result.projectId!)
     expect(proj.slug).toBe('my-app')
   })
 
@@ -206,7 +213,8 @@ describe('resolveProject', () => {
       startCwd: null,
       transcriptPath: null,
     })
-    expect(result).toBeNull()
+    expect(result.projectId).toBeNull()
+    expect(result.originKind).toBeNull()
   })
 
   test('no flag and no slug → returns null (sessions land unassigned)', async () => {
@@ -216,7 +224,7 @@ describe('resolveProject', () => {
       startCwd: '/Users/joe/repo',
       transcriptPath: '/Users/joe/.claude/projects/foo/session.jsonl',
     })
-    expect(result).toBeNull()
+    expect(result.projectId).toBeNull()
   })
 
   test('UNIQUE collision on slug recovers via re-select', async () => {
@@ -231,7 +239,7 @@ describe('resolveProject', () => {
       startCwd: null,
       transcriptPath: null,
     })
-    expect(result).toBe(first.id)
+    expect(result.projectId).toBe(first.id)
   })
 
   test('flags.resolveProject — worktree path joins existing parent project', async () => {
@@ -243,7 +251,8 @@ describe('resolveProject', () => {
       startCwd: '/Users/joe/dev/my-app/.worktrees/feat-foo',
       transcriptPath: null,
     })
-    expect(result).toBe(proj.id)
+    expect(result.projectId).toBe(proj.id)
+    expect(result.originKind).toBe('pipeline')
     // The worktree-branch slug must NOT have been auto-created.
     const featProj = await store.getProjectBySlug('feat-foo')
     expect(featProj).toBeNull()
@@ -258,7 +267,8 @@ describe('resolveProject', () => {
       startCwd: '/Users/joe/dev/my-app/.claude/worktrees/feat-foo',
       transcriptPath: null,
     })
-    expect(result).toBe(proj.id)
+    expect(result.projectId).toBe(proj.id)
+    expect(result.originKind).toBe('pipeline')
   })
 
   test('flags.resolveProject — worktree path with no matching parent project creates branch-name project (regression guard)', async () => {
@@ -269,8 +279,12 @@ describe('resolveProject', () => {
       startCwd: '/Users/joe/dev/my-app/.worktrees/feat-foo',
       transcriptPath: null,
     })
-    expect(result).not.toBeNull()
-    const proj = await store.getProjectById(result!)
+    expect(result.projectId).not.toBeNull()
+    // No parent project existed and no resolvable git origin (fake path
+    // not on disk), so this falls all the way to the cwd-basename
+    // fallback — a direct-style resolution, not a pipeline tag.
+    expect(result.originKind).toBe('direct')
+    const proj = await store.getProjectById(result.projectId!)
     expect(proj.slug).toBe('feat-foo')
   })
 
@@ -308,8 +322,9 @@ describe('resolveProject', () => {
         startCwd: checkoutDir,
         transcriptPath: null,
       })
-      expect(result).not.toBeNull()
-      const proj = await store.getProjectById(result!)
+      expect(result.projectId).not.toBeNull()
+      expect(result.originKind).toBe('pipeline')
+      const proj = await store.getProjectById(result.projectId!)
       expect(proj.slug).toBe('yogi-flow')
     })
 
@@ -323,7 +338,8 @@ describe('resolveProject', () => {
         startCwd: checkoutDir,
         transcriptPath: null,
       })
-      expect(result).toBe(existing.id)
+      expect(result.projectId).toBe(existing.id)
+      expect(result.originKind).toBe('pipeline')
     })
 
     test('falls through to ULID basename when the worktree has no resolvable origin', async () => {
@@ -343,8 +359,9 @@ describe('resolveProject', () => {
         startCwd: checkoutDir,
         transcriptPath: null,
       })
-      expect(result).not.toBeNull()
-      const proj = await store.getProjectById(result!)
+      expect(result.projectId).not.toBeNull()
+      expect(result.originKind).toBe('direct')
+      const proj = await store.getProjectById(result.projectId!)
       expect(proj.slug).toBe('01ulid')
     })
 
@@ -358,8 +375,9 @@ describe('resolveProject', () => {
         startCwd: plainDir,
         transcriptPath: null,
       })
-      expect(result).not.toBeNull()
-      const proj = await store.getProjectById(result!)
+      expect(result.projectId).not.toBeNull()
+      expect(result.originKind).toBe('direct')
+      const proj = await store.getProjectById(result.projectId!)
       expect(proj.slug).toBe('my-real-project')
     })
   })

@@ -21,6 +21,8 @@ import { DrillIn } from './drill-in'
 import {
   DEFAULT_WINDOW_MS,
   DEFAULT_VIEW_H,
+  ZOOM_MIN_VIEW,
+  ZOOM_MAX_VIEW,
   windowPosToMs,
   windowMsToPos,
   zoomPosToViewH,
@@ -53,6 +55,7 @@ interface NodeMeta {
   baseR: number
   orbitDots: number
   lastActivity: number
+  originKind: 'pipeline' | 'direct' | null
 }
 
 interface NodeEls {
@@ -161,6 +164,7 @@ export function ConstellationView({ onOpenSession }: DashboardThemeProps) {
         baseR: radius(s.eventCount),
         orbitDots: Math.min(Math.max((s.agentCount ?? 1) - 1, 0), 6),
         lastActivity: s.lastActivity,
+        originKind: s.originKind ?? null,
       })),
     [sessions],
   )
@@ -234,6 +238,27 @@ export function ConstellationView({ onOpenSession }: DashboardThemeProps) {
     return out
   }, [wellProjectIds, costSummaryQueries])
 
+  // Worktree-pipeline vs direct-session cost split — a second line under
+  // the well's combined cost label, shown only once at least one session
+  // in the project actually went through the pipeline path, so a project
+  // that's 100% direct work isn't cluttered with a redundant "direct-only"
+  // line.
+  const wellCostSplitLabels = useMemo(() => {
+    const out = new Map<string, string>()
+    wellProjectIds.forEach((projectId, i) => {
+      const summary = costSummaryQueries[i]?.data
+      if (!summary || !summary.hasData) return
+      const { pipeline, direct } = summary.bySource
+      if (pipeline.sessionsWithUsage === 0) return
+      const fmtSplit = (s: (typeof summary.bySource)['pipeline']) => {
+        const tok = fmtTokensCompact(s.inputTokens + s.outputTokens)
+        return s.costCents == null ? tok : `${tok}/${fmtCents(s.costCents)}`
+      }
+      out.set(`p${projectId}`, `◆ pipeline ${fmtSplit(pipeline)} · direct ${fmtSplit(direct)}`)
+    })
+    return out
+  }, [wellProjectIds, costSummaryQueries])
+
   // ---- imperative state shared with the animation loop (no re-render) ----
   const simRef = useRef(new Map<string, SimNode>())
   const elRef = useRef(new Map<string, NodeEls>())
@@ -264,6 +289,7 @@ export function ConstellationView({ onOpenSession }: DashboardThemeProps) {
   const movedRef = useRef(false)
   const capturedRef = useRef(false)
   const panStartRef = useRef({ x: 0, y: 0, cx: 0, cy: 0 })
+  const wheelZoomFrameRef = useRef(0)
 
   useEffect(() => {
     flaggedRef.current = flaggedSet
@@ -478,6 +504,7 @@ export function ConstellationView({ onOpenSession }: DashboardThemeProps) {
       `<div class="cst-tt-slug">${m.slug}</div>` +
       `<div class="cst-tt-row"><span>project</span><b>${m.projectName}</b></div>` +
       `<div class="cst-tt-row"><span>subagents</span><b>${m.orbitDots}</b></div>` +
+      (m.originKind === 'pipeline' ? `<div class="cst-tt-pipeline">◆ Pipeline agent</div>` : '') +
       (flagged ? `<div class="cst-tt-attn">● needs attention</div>` : '')
   }
   const hideTooltip = () => {
@@ -547,6 +574,57 @@ export function ConstellationView({ onOpenSession }: DashboardThemeProps) {
     }
     if (svgRef.current) svgRef.current.style.cursor = ''
   }
+  // ---- scroll-to-zoom, centered on the cursor ----
+  // Attached as a native (non-passive) listener rather than JSX onWheel:
+  // React marks synthetic wheel handlers passive, so preventDefault() inside
+  // them is silently ignored (and warns) — we need it to stop page/site
+  // scroll from fighting the zoom while the pointer is over the canvas.
+  // camRef is updated synchronously here (same as onPointerMove's pan), and
+  // the animation loop's existing pan/zoom easing carries it to the on-screen
+  // viewBox — no separate zoom-specific easing needed. `setViewH` (which
+  // persists to localStorage and drives the zoom slider) is batched to once
+  // per animation frame so a fast trackpad fling doesn't spam re-renders.
+  useEffect(() => {
+    const el = svgRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (focusedRef.current) return // no zoom while drilled into a session
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      if (!rect.width || !rect.height) return
+      const cam = camRef.current
+      const cursorX = e.clientX - (rect.left + rect.width / 2)
+      const cursorY = e.clientY - (rect.top + rect.height / 2)
+      const worldX = cam.cx + cursorX * (cam.w / rect.width)
+      const worldY = cam.cy + cursorY * (cam.h / rect.height)
+
+      // Natural wheel direction: scrolling "down" (positive deltaY) zooms
+      // out (larger viewH), matching the map/canvas convention used
+      // elsewhere in the app.
+      const factor = Math.exp(e.deltaY * 0.0015)
+      const nextViewH = Math.min(ZOOM_MAX_VIEW, Math.max(ZOOM_MIN_VIEW, viewHRef.current * factor))
+      const scale = nextViewH / viewHRef.current
+      const newW = cam.w * scale
+      const newH = cam.h * scale
+      const newCx = worldX - cursorX * (newW / rect.width)
+      const newCy = worldY - cursorY * (newH / rect.height)
+
+      camRef.current = clampCam({ cx: newCx, cy: newCy, w: newW, h: newH }, worldBoundsRef.current)
+      viewHRef.current = nextViewH
+      if (!wheelZoomFrameRef.current) {
+        wheelZoomFrameRef.current = requestAnimationFrame(() => {
+          wheelZoomFrameRef.current = 0
+          setViewH(viewHRef.current)
+        })
+      }
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      if (wheelZoomFrameRef.current) cancelAnimationFrame(wheelZoomFrameRef.current)
+    }
+  }, [])
+
   const onBackgroundClick = () => {
     if (movedRef.current) {
       movedRef.current = false
@@ -642,6 +720,17 @@ export function ConstellationView({ onOpenSession }: DashboardThemeProps) {
                     {wellCostLabels.get(w.key)}
                   </text>
                 )}
+                {wellCostSplitLabels.has(w.key) && (
+                  <text
+                    className={
+                      'cst-well-split-label' + (small ? ' cst-well-split-label--small' : '')
+                    }
+                    x={0}
+                    y={-w.r - 38}
+                  >
+                    {wellCostSplitLabels.get(w.key)}
+                  </text>
+                )}
               </g>
             )
           })}
@@ -652,7 +741,11 @@ export function ConstellationView({ onOpenSession }: DashboardThemeProps) {
               <g
                 key={m.id}
                 ref={(g) => registerNode(m.id, g)}
-                className={'cst-star' + (focusedId === m.id ? ' cst-star--focused' : '')}
+                className={
+                  'cst-star' +
+                  (focusedId === m.id ? ' cst-star--focused' : '') +
+                  (m.originKind === 'pipeline' ? ' cst-star--pipeline' : '')
+                }
                 onMouseMove={(e) => !focusedId && showTooltip(e, m)}
                 onMouseLeave={hideTooltip}
                 onClick={(e) => {

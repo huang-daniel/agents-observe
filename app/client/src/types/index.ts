@@ -42,6 +42,12 @@ export interface Session {
   // populate this; only the active session's count is recomputed
   // live in the client from streaming events.
   eventCount?: number
+  // 'pipeline' when the resolver walked a worktree cwd (or its git
+  // origin) to reach this session's project — i.e. launched by a
+  // worktree-based verification pipeline (no-mistakes or similar)
+  // rather than run directly in the project's own checkout. 'direct'
+  // for a normal interactive session; null when unresolved.
+  originKind?: 'pipeline' | 'direct' | null
 }
 
 /** Agent metadata from the server — no derived state.
@@ -116,6 +122,7 @@ export interface RecentSession {
   // sum them per-project without an extra round trip.
   eventCount?: number
   agentCount?: number
+  originKind?: 'pipeline' | 'direct' | null
 }
 
 export interface NotificationPayload {

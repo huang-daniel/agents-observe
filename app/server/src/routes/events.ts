@@ -117,7 +117,7 @@ router.post('/events', async (c) => {
     const session = await store.getSessionById(envelope.sessionId)
 
     // ---- Step 3: project resolution --------------------------------------
-    const resolvedProjectId = await resolveProject(store, {
+    const { projectId: resolvedProjectId, originKind } = await resolveProject(store, {
       sessionId: envelope.sessionId,
       meta: envelope._meta?.project,
       flags: envelope.flags,
@@ -126,7 +126,7 @@ router.post('/events', async (c) => {
       currentProjectId: session?.project_id ?? null,
     })
     if (resolvedProjectId !== null && resolvedProjectId !== session?.project_id) {
-      await store.updateSessionProject(envelope.sessionId, resolvedProjectId)
+      await store.updateSessionProject(envelope.sessionId, resolvedProjectId, originKind)
     }
 
     // ---- Step 4: upsert agent --------------------------------------------

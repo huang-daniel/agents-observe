@@ -2,12 +2,14 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type TranscriptStatsData } from '@/lib/api-client'
 import { getServerHealth } from '@/lib/server-health'
+import { cn } from '@/lib/utils'
 import { useUIStore, buildHash } from '@/stores/ui-store'
 import { Dialog, DialogContent, DialogClose, DialogTitle } from '@/components/ui/dialog'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/shared/loading-states'
+import { OriginKindBadge } from '@/components/shared/origin-kind-badge'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -202,7 +204,10 @@ export function SessionEditModal() {
       >
         <DialogContent
           aria-describedby={undefined}
-          className="w-[1200px] max-w-[95vw] max-h-[85vh] flex flex-col p-0"
+          className={cn(
+            'w-[1200px] max-w-[95vw] max-h-[85vh] flex flex-col p-0 border-t-2',
+            session?.originKind === 'pipeline' ? 'border-t-amber-500/60' : 'border-t-transparent',
+          )}
         >
           {/* Header: session name + actions */}
           <div className="flex items-center gap-3 px-5 pt-5 pb-1">
@@ -293,6 +298,12 @@ export function SessionEditModal() {
                   <span>·</span>
                   <Folder className="h-3 w-3 shrink-0" />
                   <span className="truncate">{session.projectName}</span>
+                </>
+              )}
+              {session.originKind === 'pipeline' && (
+                <>
+                  <span>·</span>
+                  <OriginKindBadge originKind={session.originKind} />
                 </>
               )}
             </div>

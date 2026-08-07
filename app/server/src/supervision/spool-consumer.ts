@@ -164,7 +164,7 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
       sessionHints?.startCwd ?? null,
     )
     const session = await options.store.getSessionById(envelope.sessionId)
-    const resolvedProjectId = await resolveProject(options.store, {
+    const { projectId: resolvedProjectId, originKind } = await resolveProject(options.store, {
       sessionId: envelope.sessionId,
       meta: envelope._meta?.project,
       flags: envelope.flags,
@@ -173,7 +173,7 @@ export function createSpoolConsumer(options: SpoolConsumerOptions): SpoolConsume
       currentProjectId: session?.project_id ?? null,
     })
     if (resolvedProjectId !== null && resolvedProjectId !== session?.project_id) {
-      await options.store.updateSessionProject(envelope.sessionId, resolvedProjectId)
+      await options.store.updateSessionProject(envelope.sessionId, resolvedProjectId, originKind)
     }
     await options.store.upsertAgent(
       envelope.agentId,
