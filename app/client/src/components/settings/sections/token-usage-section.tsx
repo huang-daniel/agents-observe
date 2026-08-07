@@ -22,7 +22,7 @@ import { getServerHealth } from '@/lib/server-health'
 function fmt(n: number): string {
   return n.toLocaleString()
 }
-function fmtCents(c: number | null): string {
+export function fmtCents(c: number | null): string {
   if (c == null) return '—'
   return `$${(c / 100).toFixed(2)}`
 }

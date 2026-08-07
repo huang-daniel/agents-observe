@@ -265,6 +265,27 @@ export const api = {
     const body = await res.json().catch(() => ({}))
     return (body.pricing ?? {}) as Record<string, TranscriptStatsModelPricing | null>
   },
+
+  /** Server-cached token/cost totals across every session in a project —
+   *  powers the constellation well's cost label. Returns null on a 404
+   *  (transcript stats disabled server-side) rather than throwing, since
+   *  the caller treats "no data" as a normal, common case. */
+  getProjectCostSummary: async (projectId: number): Promise<ProjectCostSummary | null> => {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/cost-summary`)
+    if (!res.ok) return null
+    return (await res.json()) as ProjectCostSummary
+  },
+}
+
+export interface ProjectCostSummary {
+  projectId: number
+  inputTokens: number
+  outputTokens: number
+  costCents: number | null
+  sessionsTotal: number
+  sessionsWithUsage: number
+  hasData: boolean
+  cachedAt: number
 }
 
 // ── Transcript stats types (V2: matches server transcript-parser) ──

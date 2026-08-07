@@ -108,6 +108,21 @@
   letter-spacing: 0.5px;
   text-anchor: middle;
 }
+.cst-well-cost-label {
+  fill: var(--c-muted);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.3px;
+  text-anchor: middle;
+  opacity: 0.65;
+}
+.cst-well-cost-label--small {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.cst-well-g:hover .cst-well-cost-label--small {
+  opacity: 0.55;
+}
 .cst-edge {
   stroke: var(--c-edge);
   stroke-width: 1;
@@ -194,7 +209,8 @@
 }
 .constellation--focused .cst-field .cst-well,
 .constellation--focused .cst-field .cst-well-ring,
-.constellation--focused .cst-field .cst-well-label {
+.constellation--focused .cst-field .cst-well-label,
+.constellation--focused .cst-field .cst-well-cost-label {
   opacity: 0.02 !important;
 }
 .cst-star--focused .cst-label {
