@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.14 — Real project attribution, prompt-based session titles, and per-project cost labels
+
+This release resolves two long-standing backlog items around worktree-based sessions and surfaces token usage and estimated cost directly on the constellation view.
+
+### Features
+
+- Worktree-launched sessions (e.g. from validation tools that run inside fresh per-run worktrees) now attribute to their real originating project by resolving the worktree's git origin, instead of a meaningless per-run identifier.
+- Sessions are now titled from their first user prompt instead of falling back to a generic branch-based label.
+- The constellation view now shows a per-project token-usage and estimated-cost label on each project's well.
+
 ## v0.9.12 — Security hardening and cross-platform fixes
 
 This release tightens default security by binding the server to loopback, restricting CORS, and rejecting cross-origin WebSocket connections. It also fixes running the dashboard on Windows and SELinux hosts, and improves structured output summaries.
