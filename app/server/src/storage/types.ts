@@ -116,7 +116,16 @@ export interface EventStore {
   updateSessionStatus(id: string, status: string): Promise<void>
   patchSessionMetadata(sessionId: string, patch: Record<string, unknown>): Promise<void>
   updateSessionSlug(sessionId: string, slug: string): Promise<void>
-  updateSessionProject(sessionId: string, projectId: number): Promise<void>
+  /**
+   * `originKind` is 'pipeline' for a worktree/git-origin-walk resolution
+   * (see project-resolver.ts), 'direct' for a normal match, or omitted to
+   * leave the existing origin_kind untouched (manual PATCH reassignment).
+   */
+  updateSessionProject(
+    sessionId: string,
+    projectId: number,
+    originKind?: 'pipeline' | 'direct' | null,
+  ): Promise<void>
   updateAgentName(agentId: string, name: string): Promise<void>
   /** Set `pending_notification_ts = timestamp` and bump count + last. */
   startSessionNotification(sessionId: string, timestamp: number): Promise<void>

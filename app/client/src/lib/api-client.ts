@@ -277,6 +277,13 @@ export const api = {
   },
 }
 
+export interface ProjectCostSplitTotals {
+  inputTokens: number
+  outputTokens: number
+  costCents: number | null
+  sessionsWithUsage: number
+}
+
 export interface ProjectCostSummary {
   projectId: number
   inputTokens: number
@@ -286,6 +293,12 @@ export interface ProjectCostSummary {
   sessionsWithUsage: number
   hasData: boolean
   cachedAt: number
+  /** Same totals split by session origin — see OriginKindBadge /
+   *  project-resolver.ts for what 'pipeline' vs 'direct' means. */
+  bySource: {
+    pipeline: ProjectCostSplitTotals
+    direct: ProjectCostSplitTotals
+  }
 }
 
 // ── Transcript stats types (V2: matches server transcript-parser) ──

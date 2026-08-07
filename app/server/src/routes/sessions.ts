@@ -42,6 +42,7 @@ function rowToRecentSession(r: any) {
     eventCount: r.event_count,
     lastActivity: r.last_activity,
     agentClasses: parseAgentClasses(r.agent_classes),
+    originKind: r.origin_kind ?? null,
   }
 }
 
@@ -89,6 +90,7 @@ router.get('/sessions/:id', async (c) => {
     eventCount: row.event_count,
     lastActivity: row.last_activity,
     agentClasses: parseAgentClasses(row.agent_classes),
+    originKind: row.origin_kind ?? null,
   })
 })
 

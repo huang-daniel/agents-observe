@@ -6,6 +6,7 @@ import {
   dismissNotification,
   useSessionHasNotification,
 } from '@/components/sidebar/notification-indicator'
+import { OriginKindBadge } from '@/components/shared/origin-kind-badge'
 import type { Session, RecentSession } from '@/types'
 
 function formatRelativeTime(ts: number): string {
@@ -102,7 +103,8 @@ function SessionRow({
       role="button"
       tabIndex={0}
       className={cn(
-        'w-full text-left px-4 py-3 hover:bg-accent/50 transition-colors cursor-pointer',
+        'w-full text-left px-4 py-3 hover:bg-accent/50 transition-colors cursor-pointer border-l-2',
+        session.originKind === 'pipeline' ? 'border-l-amber-500/60' : 'border-l-transparent',
         'focus:outline-none focus-visible:ring-1 focus-visible:ring-ring',
       )}
       onClick={onSelect}
@@ -141,6 +143,7 @@ function SessionRow({
           />
         )}
         <span className="text-sm font-medium truncate">{label}</span>
+        <OriginKindBadge originKind={session.originKind} />
         <div className="flex items-center gap-1.5 ml-auto shrink-0">
           {/* event count badge removed — counts are no longer
               denormalized on the session row. Re-add via

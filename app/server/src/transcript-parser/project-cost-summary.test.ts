@@ -110,6 +110,55 @@ describe('getProjectCostSummary', () => {
     expect(summary.costCents).toBeGreaterThan(0)
   })
 
+  test('splits totals into pipeline vs direct by session.origin_kind', async () => {
+    vi.resetModules()
+    const { getProjectCostSummary, _testResetProjectCostSummaryCache } =
+      await import('./project-cost-summary')
+    _testResetProjectCostSummaryCache()
+
+    const pathA = writeFixture()
+    const pathB = writeFixture()
+    const store = makeStore({
+      getSessionsForProject: async () =>
+        [
+          { id: 'sessA', origin_kind: 'pipeline' },
+          { id: 'sessB', origin_kind: 'direct' },
+        ] as any,
+      getSessionTranscriptPath: async (id: string) => (id === 'sessA' ? pathA : pathB),
+      getAgentsForSession: async (id: string) => [{ id, agent_class: 'claude-code' }] as any,
+    })
+
+    const summary = await getProjectCostSummary(5, store)
+    expect(summary.bySource.pipeline.sessionsWithUsage).toBe(1)
+    expect(summary.bySource.pipeline.inputTokens).toBe(100000)
+    expect(summary.bySource.pipeline.outputTokens).toBe(10000)
+    expect(summary.bySource.pipeline.costCents).toBeGreaterThan(0)
+    expect(summary.bySource.direct.sessionsWithUsage).toBe(1)
+    expect(summary.bySource.direct.inputTokens).toBe(100000)
+    expect(summary.bySource.direct.outputTokens).toBe(10000)
+    // Grand totals still sum both sources.
+    expect(summary.inputTokens).toBe(200000)
+    expect(summary.outputTokens).toBe(20000)
+  })
+
+  test('buckets a NULL origin_kind (pre-existing sessions) as direct', async () => {
+    vi.resetModules()
+    const { getProjectCostSummary, _testResetProjectCostSummaryCache } =
+      await import('./project-cost-summary')
+    _testResetProjectCostSummaryCache()
+
+    const path = writeFixture()
+    const store = makeStore({
+      getSessionsForProject: async () => [{ id: 'sessA', origin_kind: null }] as any,
+      getSessionTranscriptPath: async () => path,
+      getAgentsForSession: async () => [{ id: 'sessA', agent_class: 'claude-code' }] as any,
+    })
+
+    const summary = await getProjectCostSummary(6, store)
+    expect(summary.bySource.direct.sessionsWithUsage).toBe(1)
+    expect(summary.bySource.pipeline.sessionsWithUsage).toBe(0)
+  })
+
   test('skips sessions with unsupported agent classes rather than zeroing them in', async () => {
     vi.resetModules()
     const { getProjectCostSummary, _testResetProjectCostSummaryCache } =

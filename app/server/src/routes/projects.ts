@@ -93,6 +93,7 @@ router.get('/projects/:id/sessions', async (c) => {
       typeof r.agent_classes === 'string' && r.agent_classes
         ? r.agent_classes.split(',').filter(Boolean)
         : [],
+    originKind: r.origin_kind ?? null,
   }))
   return c.json(sessions)
 })

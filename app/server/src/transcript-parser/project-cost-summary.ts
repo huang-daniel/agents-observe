@@ -3,6 +3,16 @@ import type { EventStore } from '../storage/types'
 import { config } from '../config'
 import { parseSessionTranscripts } from './index'
 
+export interface CostSplitTotals {
+  inputTokens: number
+  outputTokens: number
+  /** null when any contributing session has usage on a model with no
+   *  known pricing — same "unknown, not zero" convention as the
+   *  per-session summary's costTotalCents. */
+  costCents: number | null
+  sessionsWithUsage: number
+}
+
 export interface ProjectCostSummary {
   projectId: number
   inputTokens: number
@@ -17,6 +27,19 @@ export interface ProjectCostSummary {
   sessionsWithUsage: number
   hasData: boolean
   cachedAt: number
+  /**
+   * Same totals split by session.origin_kind (see project-resolver.ts):
+   * 'pipeline' for worktree/git-origin-walk launched sessions (e.g.
+   * no-mistakes), 'direct' for everything else, including sessions that
+   * predate the origin_kind column (origin_kind IS NULL) — bucketed as
+   * direct since that was the only kind before this column existed.
+   * Lets the captain eyeball verification-pipeline spend against direct
+   * work for the same project.
+   */
+  bySource: {
+    pipeline: CostSplitTotals
+    direct: CostSplitTotals
+  }
 }
 
 const TTL_MS = 60 * 1000
@@ -65,6 +88,8 @@ async function computeProjectCostSummary(
   let outputTokens = 0
   let costCents: number | null = 0
   let sessionsWithUsage = 0
+  const pipeline = emptySplit()
+  const direct = emptySplit()
 
   for (const session of sessions as any[]) {
     const sessionId = session.id
@@ -98,6 +123,16 @@ async function computeProjectCostSummary(
     } else if (costCents !== null) {
       costCents += stats.summary.costTotalCents
     }
+
+    const split = session.origin_kind === 'pipeline' ? pipeline : direct
+    split.sessionsWithUsage += 1
+    split.inputTokens += stats.summary.inputTotal
+    split.outputTokens += stats.summary.outputTotal
+    if (stats.summary.costTotalCents == null) {
+      split.costCents = null
+    } else if (split.costCents !== null) {
+      split.costCents += stats.summary.costTotalCents
+    }
   }
 
   return {
@@ -109,7 +144,12 @@ async function computeProjectCostSummary(
     sessionsWithUsage,
     hasData: sessionsWithUsage > 0,
     cachedAt: Date.now(),
+    bySource: { pipeline, direct },
   }
+}
+
+function emptySplit(): CostSplitTotals {
+  return { inputTokens: 0, outputTokens: 0, costCents: 0, sessionsWithUsage: 0 }
 }
 
 /** Test-only: clear the cache and any in-flight computations. */

@@ -80,6 +80,7 @@ export class SqliteAdapter implements EventStore {
         metadata TEXT,
         last_activity INTEGER,
         pending_notification_ts INTEGER,
+        origin_kind TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
@@ -215,6 +216,13 @@ export class SqliteAdapter implements EventStore {
       this.db.exec(
         'UPDATE sessions SET last_notification_ts = pending_notification_ts WHERE pending_notification_ts IS NOT NULL',
       )
+    }
+    // origin_kind: 'pipeline' when project resolution walked a worktree
+    // launcher (no-mistakes-style) to its origin repo, 'direct' for a
+    // normal interactive session, NULL when unresolved. Set once by
+    // resolveProject alongside project_id — see project-resolver.ts.
+    if (!sessionColsAfter.some((c) => c.name === 'origin_kind')) {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN origin_kind TEXT')
     }
 
     this.db.exec(`
@@ -712,10 +720,20 @@ export class SqliteAdapter implements EventStore {
       .run(status === 'stopped' ? Date.now() : null, id)
   }
 
-  async updateSessionProject(sessionId: string, projectId: number): Promise<void> {
+  async updateSessionProject(
+    sessionId: string,
+    projectId: number,
+    originKind?: 'pipeline' | 'direct' | null,
+  ): Promise<void> {
+    if (originKind === undefined) {
+      this.db
+        .prepare('UPDATE sessions SET project_id = ?, updated_at = ? WHERE id = ?')
+        .run(projectId, Date.now(), sessionId)
+      return
+    }
     this.db
-      .prepare('UPDATE sessions SET project_id = ?, updated_at = ? WHERE id = ?')
-      .run(projectId, Date.now(), sessionId)
+      .prepare('UPDATE sessions SET project_id = ?, origin_kind = ?, updated_at = ? WHERE id = ?')
+      .run(projectId, originKind, Date.now(), sessionId)
   }
 
   async patchSessionMetadata(sessionId: string, patch: Record<string, unknown>): Promise<void> {
