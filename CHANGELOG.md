@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.15 — Pipeline-origin tagging, cost split by pipeline source, and constellation zoom
+
+This release distinguishes worktree/pipeline-launched sessions (e.g. no-mistakes verification runs) from direct interactive work, splits per-project costs by source to reveal pipeline spend, and adds scroll-wheel zoom to the Constellation dashboard centered on the cursor.
+
+### Features
+
+- Sessions resolved via worktree/pipeline paths (no-mistakes or any future launcher matching the same resolution logic) are now tagged with `origin_kind` ('pipeline' vs 'direct') and shown with a distinct badge and color accent in the session list, session modal, and Constellation view.
+- Extended the per-project cost/token summary to split totals by `bySource.pipeline` and `bySource.direct`, so the Constellation view's per-project label shows how much spend is driven by the verification pipeline relative to direct work.
+- Added cursor-centered scroll-wheel and trackpad zoom to the Constellation canvas, scoped to the canvas so it doesn't trigger page scroll outside the dashboard.
+
 ## v0.9.14 — Real project attribution, prompt-based session titles, and per-project cost labels
 
 This release resolves two long-standing backlog items around worktree-based sessions and surfaces token usage and estimated cost directly on the constellation view.
